@@ -1891,7 +1891,8 @@ def move_right(left, right, exp):
 
     if opcode(left) == "add":
         terms = left[1:]
-        assert exp in terms, terms  # deep embedding unsupported
+        if exp not in terms:
+            return None  # deep embedding unsupported
         for e in terms:
             if e != exp:
                 if type(e) == int:
@@ -1902,7 +1903,8 @@ def move_right(left, right, exp):
 
     if opcode(left) == "mul":
         terms = left[1:]
-        assert exp in terms  # deep embedding unsupported
+        if exp not in terms:
+            return None  # deep embedding unsupported
         for e in terms:
             if e != exp:
                 assert type(e) != list
@@ -1942,6 +1944,8 @@ def normalize(cond):
         assert type(right) != list
         assert type(left) != list
         right = move_right(left, right, var)
+        if right is None:
+            return None
         left = var
         cond = (cond[0], left, right)
 
@@ -2211,10 +2215,8 @@ def parse_counters(line):
     a["setvars"] = setvars
     a["jds"] = jds
 
-    conts = find_conts(path)
-    #    print(conts)
-    #    print(find_op_list(path, 'continue'))
-    assert conts == find_op_list(path, "continue")
+    # the continues of this loop, not of the ones nested in it
+    conts = [c for c in find_conts(path) if c[1] == jds]
 
     startvars = {}
     for v in setvars:
@@ -2222,7 +2224,7 @@ def parse_counters(line):
         startvars[m.vidx] = m.vval
 
     cond = normalize(cond)
-    if cond is None:
+    if cond is None or not conts:
         return {}
 
     cont = conts[0]
