@@ -42,6 +42,40 @@ def unsigned_to_signed(value):
         return value - UINT_256_CEILING
 
 
+# Symbols standing for values that can change while the contract runs, as
+# opposed to e.g. calldata or block attributes. Panoramix uses the same
+# expression for e.g. a storage slot before and after it's written to, or
+# for the success of every external call, so two identical expressions
+# mentioning one of these don't necessarily have the same value.
+VOLATILE = (
+    "storage",
+    "balance",
+    "ext_call",
+    "returndatasize",
+    "return_code",
+    "new_address",
+    "memcopy",
+    ".result",
+    "gas",
+    "extcodesize",
+    "extcodehash",
+    "mem",
+    "msize",
+)
+
+
+def mentions(exp, names):
+    if type(exp) == str:
+        return any(name in exp for name in names)
+    if type(exp) == tuple:
+        return any(mentions(e, names) for e in exp)
+    return False
+
+
+def is_volatile(exp):
+    return mentions(exp, VOLATILE)
+
+
 def simplify_bool(exp):
     if opcode(exp) == "iszero":
         inside = simplify_bool(exp[1])
@@ -153,6 +187,14 @@ def is_zero(exp):
 
 
 def eval_bool(exp, known_true=True, symbolic=True):
+    # ('bool', x) is true exactly when x is, so a known-true ('bool', x)
+    # tells us as much as a known-true x. is_zero(('iszero', x)) yields
+    # ('bool', x), so this is what the VM passes as the condition of the
+    # false branch of `if iszero(x)` - e.g. the `iszero(success)` check
+    # after every external call.
+    if opcode(known_true) == "bool":
+        known_true = known_true[1]
+
     if exp == known_true:
         return True
 
@@ -162,11 +204,12 @@ def eval_bool(exp, known_true=True, symbolic=True):
     if exp == is_zero(known_true):
         return False
 
+    if exp is True or exp is False:
+        # is_zero() of a number returns a python bool
+        return exp
+
     if type(exp) == int:
         return exp > 0
-
-    if exp in (True, False):
-        return True
 
     if opcode(exp) == "bool":
         return eval_bool(exp[1], known_true=known_true, symbolic=symbolic)
@@ -184,6 +227,13 @@ def eval_bool(exp, known_true=True, symbolic=True):
                 return None
             res = res or ev
         return res
+
+    if opcode(exp) == "and":
+        # `and` can be bitwise as well, so we can only tell when an operand
+        # is zero: (True and 2) is 2 & 1 == 0 for the EVM.
+        for e in exp[1:]:
+            if eval_bool(e, known_true=known_true, symbolic=symbolic) is False:
+                return False
 
         #'ge', 'gt', 'eq' - tbd
     if opcode(exp) in ["le", "lt"] and opcode(exp) == opcode(known_true):
@@ -474,10 +524,44 @@ def eval(exp):
 
     for p in exp[1:]:
         if type(p) != int:
-            return exp
+            return eval_symbolic(exp)
 
     if exp[0] in OPCODES:
         return OPCODES[exp[0]](*exp[1:])
+
+    return exp
+
+
+def eval_symbolic(exp):
+    """
+    Identities that hold regardless of the value of the symbolic operands.
+    (in the same spirit as `mul` or `div` above returning 0 without looking
+    at the other operand)
+    """
+    if len(exp) != 3:
+        return exp
+
+    op, left, right = exp
+
+    if op in ("div", "sdiv", "mod", "smod") and left == 0:
+        return 0
+
+    if op == "mul" and 0 in (left, right):
+        return 0
+
+    if left == right and not is_volatile(left):
+        if op in ("lt", "gt", "slt", "sgt"):
+            return 0
+
+        if op in ("le", "ge", "sle", "sge", "eq"):
+            return 1
+
+    # unsigned comparisons with zero
+    if (op == "gt" and left == 0) or (op == "lt" and right == 0):
+        return 0
+
+    if (op == "le" and left == 0) or (op == "ge" and right == 0):
+        return 1
 
     return exp
 

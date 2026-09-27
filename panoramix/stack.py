@@ -149,6 +149,9 @@ class Stack(EasyCopy):
         if op in arithmetic.OPCODES:
             exp = arithmetic.eval(exp)
 
+            if type(exp) != tuple:
+                return exp
+
         if op in ("and", "div", "mul"):
             left = exp[1]
             right = exp[2]

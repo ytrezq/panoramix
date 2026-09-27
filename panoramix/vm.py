@@ -17,13 +17,15 @@ from panoramix.core.algebra import (
     to_bytes,
     CannotCompare,
 )
-from panoramix.core.arithmetic import is_zero, simplify_bool
+from panoramix.core.arithmetic import VOLATILE, is_zero, mentions, simplify_bool
 from panoramix.matcher import match
 from panoramix.prettify import pprint_trace
 from panoramix.utils.helpers import (
     C,
+    MAX_EXP_SIZE,
     EasyCopy,
     all_concrete,
+    exp_size,
     opcode,
     precompiled,
     precompiled_var_names,
@@ -57,22 +59,70 @@ def mem_load(pos, size=32):
 
 
 def find_nodes(node, f):
-    """Recursively find nodes where f(node) returns true."""
+    """Find the nodes below `node` (itself included) where f(node) returns true."""
     assert type(node) == Node
 
-    if f(node):
-        res = [node]
-    else:
-        res = []
+    res = []
+    to_visit = [node]
 
-    for n in node.next:
-        res.extend(find_nodes(n, f))
+    while to_visit:
+        n = to_visit.pop()
+        if f(n):
+            res.append(n)
+        to_visit.extend(reversed(n.next))
 
     return res
 
 
 MAX_NODE_COUNT = 5_000
 node_count = 0
+
+
+"""
+
+    Path conditions.
+
+    Every node carries `known`: the tuple of conditions that are known to hold
+    on the execution path leading to it (one per `jumpi` taken along the way).
+    When the VM reaches a `jumpi` whose condition is implied by one of them,
+    only the feasible branch is followed. Without this, every conditional
+    that is (partially) decided by an earlier one doubles the number of paths
+    to explore, and contracts that repeat the same checks - e.g. the
+    `success`/`returndatasize`/`extcodesize` checks in the SafeERC20 and
+    Address libraries, or `token == address(0)` special cases - blow past
+    MAX_NODE_COUNT and only get a truncated, exponentially unrolled
+    decompilation.
+
+    Facts about values that can change while the contract runs (storage,
+    balances, the result of the last external call...) are forgotten as soon
+    as the relevant state may have changed, see `forget`. Everything else
+    (calldata, msg.sender, chainid...) is constant for the whole execution.
+
+"""
+
+STATE_CHANGING_OPS = (
+    "call",
+    "staticcall",
+    "delegatecall",
+    "callcode",
+    "create",
+    "create2",
+    "selfdestruct",
+)
+
+
+def forget(known, names):
+    return tuple(fact for fact in known if not mentions(fact, names))
+
+
+def is_known(exp, known):
+    """Evaluate `exp` to True/False if it is decided by the known conditions, None otherwise."""
+    for fact in reversed(known):
+        res = arithmetic.eval_bool(exp, fact, symbolic=False)
+        if res is not None:
+            return res
+
+    return None
 
 
 class Node:
@@ -84,7 +134,7 @@ class Node:
         # instead of a proper str
         return self.__str__()
 
-    def __init__(self, vm, start, safe, stack, condition=True, trace=None):
+    def __init__(self, vm, start, safe, stack, condition=True, trace=None, known=()):
         global node_count
 
         node_count += 1
@@ -101,16 +151,65 @@ class Node:
         self.label_history = {}
         self.label = None
 
+        # condition: the one under which this node is reached from its parent.
+        # known: all the conditions that hold on the path leading here.
         self.condition = condition
+        self.known = known
+
+        # set when the execution from this node on got merged with other
+        # paths, see merge_branches
+        self.merged = False
 
         stack_obj = Stack(stack)
         self.jd = (start, len(stack), tuple(stack_obj.jump_dests(vm.loader.jump_dests)))
 
     def make_trace(self):
+        res = []
+        node = self
+
+        # the nodes form long chains (a jump at the end of each), walked
+        # here in a loop rather than recursively - the recursion is only as
+        # deep as the ifs are nested
+        while node is not None:
+            res.extend(node._begin_trace())
+
+            if node.trace is None:
+                break
+
+            next_node = None
+
+            for line in node.trace:
+                if opcode(line) == "jump" and isinstance(line[1], Node):
+                    # always the last line
+                    next_node = line[1]
+
+                elif opcode(line) == "if" and isinstance(line[2], Node):
+                    # the last line, unless the paths merge again after the if -
+                    # see merge_branches - in which case a jump to the merged
+                    # node follows.
+                    _, cond, if_true, if_false = line
+                    res.append(
+                        ("if", cond, if_true.make_trace(), if_false.make_trace())
+                    )
+
+                else:
+                    res.append(line)
+
+            node = next_node
+
+        return res
+
+    def _begin_trace(self):
+        """What goes before the node's own lines in the decompiled trace."""
         if self.trace is None:
             return [("undefined", "decompilation didn't finish")]
 
-        if self.vm.just_fdests and self.trace != [("revert", 0)]:
+        if self.vm.just_fdests and (
+            self.safe and self.vm.lines.get(self.start, (None, None))[1] == "jumpdest"
+        ):
+            # the loader looks for these to find the default function
+            begin = [("jd", str(self.jd[0]))]
+        elif self.vm.just_fdests and self.trace != [("revert", 0)]:
             t = self.trace[0]
             if match(t, ("jump", ":target_node", ...)):
                 begin = [("jd", str(self.jd[0]))]  # , str(self.trace))]
@@ -124,19 +223,21 @@ class Node:
             for _, var_idx, var_val, _ in self.label.begin_vars:
                 begin_vars.append(("setvar", var_idx, var_val))
 
-            begin.append(("label", self, tuple(begin_vars)))
+            if find_nodes(
+                self,
+                lambda n: n.trace
+                and opcode(n.trace[-1]) == "goto"
+                and n.trace[-1][1] in (self, self.label),
+            ):
+                begin.append(("label", self, tuple(begin_vars)))
+            else:
+                # Nothing loops back here any more: a merge (see
+                # merge_branches) took the paths that did to the
+                # continuation of an if above, where the loop is found
+                # again. What's left here is the first iteration.
+                begin.extend(begin_vars)
 
-        last = self.trace[-1]
-
-        if opcode(last) == "jump":
-            return begin + self.trace[:-1] + last[1].make_trace()
-
-        if m := match(last, ("if", ":cond", ":if_true", ":if_false")):
-            if_true = m.if_true.make_trace()
-            if_false = m.if_false.make_trace()
-            return begin + self.trace[:-1] + [("if", m.cond, if_true, if_false)]
-
-        return begin + self.trace
+        return begin
 
     def set_label(self, loop_dest, vars, stack):
         self.label = loop_dest
@@ -148,6 +249,11 @@ class Node:
         loop_dest.trace = [("jump", self)]
         loop_dest.next = []
         self.set_prev(loop_dest)
+
+        # This node is now the body of a loop, executed for every iteration,
+        # and what we learned about the state during the first one doesn't
+        # necessarily hold for the next ones.
+        self.known = forget(self.known, VOLATILE)
 
     def set_prev(self, prev):
         self.prev = prev
@@ -168,7 +274,9 @@ class Node:
     def run(self):
         logger.debug("Node.run(%s)", self)
         self.prev_trace = self.trace
-        self.trace = self.vm._run(self.start, self.safe, self.stack, self.condition)
+        self.trace = self.vm._run(
+            self.start, self.safe, self.stack, self.condition, self.known
+        )
 
         last = self.trace[-1]
 
@@ -194,10 +302,25 @@ class VM(EasyCopy):
         self.just_fdests = just_fdests
 
         self.counter = 0
+        self.known = ()
+        self.should_quit = lambda: False
         global node_count
         node_count = 0
 
-    def run(self, start, history={}, condition=None, re_run=False, stack=(), timeout=0):
+    def run(
+        self,
+        start,
+        history={},
+        condition=None,
+        re_run=False,
+        stack=(),
+        timeout=0,
+        known=(),
+    ):
+        """
+        `known` is a tuple of conditions known to hold when `start` is reached,
+        e.g. for the default function: that no function selector matched.
+        """
         time_start = time.monotonic()
 
         def should_quit():
@@ -205,13 +328,24 @@ class VM(EasyCopy):
                 timeout and (time.monotonic() - time_start > timeout)
             )
 
-        func_node = Node(vm=self, start=start, safe=True, stack=list(stack))
+        self.should_quit = should_quit
+
+        func_node = Node(
+            vm=self, start=start, safe=True, stack=list(stack), known=tuple(known)
+        )
         trace = [
             ("setmem", ("range", 0x40, 32), 0x60),
             ("jump", func_node, "safe", tuple()),
         ]
 
-        root = Node(vm=self, trace=trace, start=start, safe=True, stack=list(stack))
+        root = Node(
+            vm=self,
+            trace=trace,
+            start=start,
+            safe=True,
+            stack=list(stack),
+            known=tuple(known),
+        )
         func_node.set_prev(root)
 
         """
@@ -246,6 +380,21 @@ class VM(EasyCopy):
                 self.replace_loops(root)
 
                 """
+                    turn them into loops right away: the later this is
+                    done, the bigger the subtree that gets thrown away and
+                    explored again when a loop is set up.
+                """
+
+                self.continue_loops(root)
+
+                """
+                    find the ifs whose branches all end up at the same
+                    jumpdest, and continue from there only once.
+                """
+
+                self.merge_branches(root)
+
+                """
                     repeat until there are no more jumps
                     to explore (so, until the trace didn't change)
 
@@ -278,6 +427,11 @@ class VM(EasyCopy):
         nodes = find_nodes(root, lambda n: n.trace is None)
 
         for node in nodes:
+            if self.should_quit():
+                # symbolic execution of a single node can take very long when
+                # the expressions get big, so the timeout is checked here too
+                break
+
             node.run()
 
     def replace_loops(self, root):
@@ -337,9 +491,233 @@ class VM(EasyCopy):
                 node.trace = None
                 node.set_label(loop_dest, tuple(vars), new_stack)
 
-    def _run(self, start, safe, stack, condition):
+    def merge_branches(self, root):
+        """
+
+        When every path going out of an `if` either ends the execution or
+        reaches the same jumpdest with the same stack layout, decompile what
+        follows that jumpdest once, as the continuation of the `if`, with
+        variables standing for the stack values that differ between paths:
+
+            if cond:                        if cond:
+                ...                             ...
+                jump X (with a on stack)        _1 = a
+            else:                           else:
+                ...                             ...
+                jump X (with b on stack)        _1 = b
+                                            X (with _1 on stack)
+
+        Without this, everything after X gets decompiled once for every path
+        leading to it, so the number of paths doubles at each such `if`. This
+        is what the compiler emits around every external call (was the call
+        successful? is there return data? is it shorter than 32 bytes?) and
+        a function doing a few of them can't be decompiled at all.
+
+        """
+        if self.just_fdests:
+            return
+
+        unexpanded = find_nodes(root, lambda n: n.trace is None)
+
+        if not unexpanded:
+            return
+
+        by_jd = {}
+        for n in find_nodes(root, lambda n: True):
+            by_jd.setdefault(n.jd, []).append(n)
+
+        tried = set()
+
+        for node in unexpanded:
+            if node.trace is not None:
+                # merged into another node during this pass
+                continue
+
+            if len(by_jd[node.jd]) < 2 or self.ends_execution(node.jd[0]):
+                # nothing to merge with, or no point (e.g. a shared revert block)
+                continue
+
+            for other in by_jd[node.jd]:
+                if other is node:
+                    continue
+
+                # the paths to node and other diverged at their closest common
+                # ancestor. if it's an `if` that's where they could be merged.
+                p = self.common_ancestor(node, other)
+
+                if (
+                    p == []
+                    or not (p.trace and opcode(p.trace[-1]) == "if")
+                    or (id(p), node.jd) in tried
+                ):
+                    continue
+
+                tried.add((id(p), node.jd))
+
+                if self._merge_at(p, node.jd):
+                    break
+
+    @staticmethod
+    def common_ancestor(a, b):
+        while a != [] and a.depth > b.depth:
+            a = a.prev
+        while b != [] and b.depth > a.depth:
+            b = b.prev
+        while a != [] and a is not b:
+            a, b = a.prev, b.prev
+        return a
+
+    def ends_execution(self, line):
+        """True if the basic block starting at `line` can only end the execution."""
+        while line in self.lines:
+            op = self.lines[line][1]
+            if op in (
+                "revert",
+                "return",
+                "stop",
+                "invalid",
+                "assert_fail",
+                "selfdestruct",
+            ):
+                return True
+            if op in ("jump", "jumpi"):
+                return False
+            line = self.loader.next_line(line)
+        return False
+
+    def _merge_at(self, p, jd):
+        """
+        Merge the paths going out of the `if` node `p` at jumpdest `jd`.
+        Returns True if it was done. (If it couldn't be done because some
+        paths were not explored yet, it will be tried again when another
+        node reaches `jd`.)
+        """
+
+        TERMINAL = (
+            "revert",
+            "return",
+            "stop",
+            "invalid",
+            "assert_fail",
+            "selfdestruct",
+            "undefined",
+        )
+
+        if jd == p.jd or not (p.trace and opcode(p.trace[-1]) == "if"):
+            # a loop rather than a merge, or `p` isn't an if any more
+            return False
+
+        hits = []
+
+        def visit(start):
+            """
+            Returns True if every path below `start` either ends, reaches
+            `jd`, or loops back (a `continue`: it doesn't get to what follows
+            the if either), False if not, None if it's too early to tell.
+            """
+            result = True
+            to_visit = [start]
+
+            while to_visit:
+                n = to_visit.pop()
+
+                if n.merged:
+                    # goes on in the continuation of an `if` below `p`, which
+                    # will be visited as well
+                    continue
+
+                if n.is_label():
+                    if n.jd == jd:
+                        # the head of a loop, let's keep it that way
+                        return False
+
+                    # Otherwise the paths inside the loop body are fair game.
+                    # If one of them gets merged before it loops back, the loop
+                    # gets peeled: its first iteration stays in the branch, and
+                    # what follows is decompiled again from the merge point,
+                    # where the loop will be found again. See make_trace for
+                    # the label left behind.
+
+                elif n.jd == jd:
+                    hits.append(n)
+                    continue
+
+                if n.trace is None:
+                    result = None
+                    continue
+
+                if n.next:
+                    to_visit.extend(reversed(n.next))
+                    continue
+
+                op = opcode(n.trace[-1]) if n.trace else None
+
+                if op in TERMINAL or op == "goto":
+                    continue
+
+                # e.g. 'loop', not yet processed by continue_loops
+                result = None
+
+            return result
+
+        _, _, if_true, if_false = p.trace[-1]
+
+        if visit(if_true) is not True or visit(if_false) is not True:
+            return False
+
+        if len(hits) < 2:
+            return False
+
+        stacks = [list(h.stack) for h in hits]
+        merged = list(stacks[0])
+        setvars = [[] for _ in hits]
+
+        for idx in range(len(merged)):
+            vals = [s[idx] for s in stacks]
+
+            if all(v == vals[0] for v in vals):
+                continue
+
+            if any(type(v) == int and v in self.loader.jump_dests for v in vals):
+                # let's not turn a jump destination into a variable
+                return False
+
+            self.counter += 1
+            name = f"_{self.counter}"
+            merged[idx] = ("var", name)
+
+            for k in range(len(hits)):
+                setvars[k].append(("setvar", name, vals[k]))
+
+        logger.debug("merging %i paths at %s", len(hits), hits[0])
+
+        for h, sv in zip(hits, setvars):
+            h.trace = sv
+            h.next = []
+            h.merged = True
+
+        # what's known at the merge point is what's known on every path
+        known = tuple(
+            fact for fact in hits[0].known if all(fact in h.known for h in hits[1:])
+        )
+
+        node = Node(
+            self,
+            start=jd[0],
+            safe=hits[0].safe,
+            stack=tuple(merged),
+            condition=True,
+            known=known,
+        )
+        node.set_prev(p)
+        p.trace.append(("jump", node))
+
+        return True
+
+    def _run(self, start, safe, stack, condition, known=()):
         logger.debug("VM._run stack=%s", stack)
         self.stack = Stack(stack)
+        self.known = known
         trace = []
 
         i = start
@@ -351,13 +729,17 @@ class VM(EasyCopy):
             else:
                 return [("invalid", "jumdest", i)]
 
-        if not safe:
-            if lines[i][1] == "jumpdest":
-                i = self.loader.next_line(i)
-                if i not in lines:
-                    return [("invalid", "eof?")]
-            else:
-                return [("invalid", "jump")]
+        if not safe and lines[i][1] != "jumpdest":
+            return [("invalid", "jump")]
+
+        if lines[i][1] == "jumpdest":
+            # This node stands for this jumpdest already: don't create another
+            # one for it below, it would look like a one-node loop.
+            # (e.g. when this is the fallthrough branch of a jumpi, and the
+            # next instruction happens to be a jumpdest)
+            i = self.loader.next_line(i)
+            if i not in lines:
+                return [("invalid", "eof?")]
 
         while True:
             try:
@@ -377,6 +759,7 @@ class VM(EasyCopy):
                     safe=False,
                     stack=tuple(self.stack.stack),
                     condition=condition,
+                    known=self.known,
                 )
                 logger.debug("jumpdest %s", n)
                 trace.append(("jump", n))
@@ -428,6 +811,7 @@ class VM(EasyCopy):
                 safe=False,
                 stack=tuple(self.stack.stack),
                 condition=condition,
+                known=self.known,
             )
 
             trace.append(("jump", n))
@@ -444,6 +828,7 @@ class VM(EasyCopy):
                 safe=False,
                 stack=tuple_stack,
                 condition=if_condition,
+                known=self.known + (if_condition,),
             )
             n_false = Node(
                 self,
@@ -451,6 +836,7 @@ class VM(EasyCopy):
                 safe=True,
                 stack=tuple_stack,
                 condition=is_zero(if_condition),
+                known=self.known + (is_zero(if_condition),),
             )
 
             if self.just_fdests:
@@ -467,9 +853,10 @@ class VM(EasyCopy):
                 ):
                     n_true.trace = [("funccall", m.fx_hash, target, tuple_stack)]
 
-            bool_condition = arithmetic.eval_bool(
-                if_condition, condition, symbolic=False
-            )
+            bool_condition = arithmetic.eval_bool(if_condition, symbolic=False)
+
+            if bool_condition is None:
+                bool_condition = is_known(if_condition, self.known)
 
             if bool_condition is not None:
                 if bool_condition:
@@ -544,6 +931,13 @@ class VM(EasyCopy):
         op = line[1]
 
         previous_len = stack.len()
+
+        if op == "sstore":
+            self.known = forget(self.known, ("storage",))
+        elif op in STATE_CHANGING_OPS:
+            # Anything can happen in the callee, including reentering this
+            # contract and changing its storage.
+            self.known = forget(self.known, VOLATILE)
 
         if "--verbose" in sys.argv or "--explain" in sys.argv:
             trace(C.asm("       " + str(stack)))
@@ -1010,6 +1404,20 @@ class VM(EasyCopy):
                 stack.len() - previous_len,
             )
             assert False, f"opcode {op} not processed correctly"
+
+        if (
+            op not in ("dup", "swap")
+            and not op.startswith("push")
+            and type(stack.peek()) == tuple
+            and exp_size(stack.peek()) > MAX_EXP_SIZE
+        ):
+            # Some arithmetic (e.g. the Newton iterations in mulDiv) makes
+            # expressions grow exponentially, and the algebra with them.
+            # Give the big ones a name, as is done for memory reads.
+            self.counter += 1
+            vname = f"_{self.counter}"
+            trace(("setvar", vname, stack.pop()))
+            stack.append(("var", vname))
 
         stack.cleanup()
 

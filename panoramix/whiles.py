@@ -149,52 +149,84 @@ def get_jds(line):
 
 
 def is_revert(trace):
-    if len(trace) > 1:
+    if len(trace) != 1:
         return False
 
-    line = trace[0]
-    return (line == ("return", 0)) or (opcode(line) in ("revert", "invalid"))
+    return opcode(trace[0]) in ("revert", "invalid")
 
 
 def to_while(trace, jd, path=None):
+    """
+    `trace` is what follows a loop label, `jd` the label. Returns
+    (before, inside, remaining, cond) so that the loop can be written as:
+
+        before
+        while cond:
+            inside
+        remaining
+
+    """
     path = path or []
 
-    while True:
+    def add_path(line):
+        # the lines preceding the exit condition are executed again after
+        # the body, before the next iteration
+        if m := match(line, ("goto", Any, ":svs")):
+            path2 = path
+            for _, v_idx, v_val in m.svs:
+                path2 = replace(path2, ("var", v_idx), v_val)
+
+            return path2 + [line]
+        else:
+            return [line]
+
+    while trace:
         line, *trace = trace
 
         if m := match(line, ("if", ":cond", ":if_true", ":if_false")):
             cond, if_true, if_false = m.cond, m.if_true, m.if_false
 
+            # `trace` is what comes after the if - if its branches merge
+            # again (see vm.merge_branches), that's what follows on the merged
+            # path. Nothing otherwise.
+
             if is_revert(if_true):
                 path.append(("require", is_zero(cond)))
-                trace = if_false
+                trace = if_false + trace
                 continue
             if is_revert(if_false):
                 path.append(("require", cond))
-                trace = if_true
+                trace = if_true + trace
                 continue
 
             jds_true = find_f_list(if_true, get_jds)
             jds_false = find_f_list(if_false, get_jds)
 
-            assert (jd in jds_true) != (jd in jds_false), (jd, jds_true, jds_false)
+            if trace or (jd not in jds_true and jd not in jds_false):
+                # The branches merge again and the loop goes on after that:
+                # a statement of the loop body (a goto inside it is a
+                # `continue`), not the exit condition, which is the last
+                # thing on its path.
+                path.append(line)
+                continue
 
-            def add_path(line):
-                if m := match(line, ("goto", Any, ":svs")):
-                    path2 = path
-                    for _, v_idx, v_val in m.svs:
-                        path2 = replace(path2, ("var", v_idx), v_val)
-
-                    return path2 + [line]
-                else:
-                    return [line]
+            if jd in jds_true and jd in jds_false:
+                # the loop goes on whichever way the if goes - if it can be
+                # left at all, it's from inside the branches (a return, or
+                # an if with an exit of its own)
+                return [], path + [line], trace, ("bool", 1)
 
             if jd in jds_true:
                 if_true = rewrite_trace(if_true, add_path)
-                return path, if_true, if_false, cond
+                return path, if_true, if_false + trace, cond
             else:
                 if_false = rewrite_trace(if_false, add_path)
-                return path, if_false, if_true, is_zero(cond)
+                return path, if_false, if_true + trace, is_zero(cond)
+
+        elif match(line, ("goto", jd, ...)):
+            # the path loops back unconditionally: the exits, if any, are
+            # the reverts and returns along the way
+            return [], rewrite_trace([line], add_path), trace, ("bool", 1)
 
         else:
             path.append(line)

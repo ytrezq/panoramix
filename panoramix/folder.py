@@ -15,6 +15,7 @@ from panoramix.utils.helpers import (
     ENDC,
     FAIL,
     car,
+    find_f_list,
     opcode,
     replace_f,
 )
@@ -127,12 +128,22 @@ def fold(trace):
         """
         log = fold_aux(log)
 
+        assert not find_f_list(log, lambda e: [e] if opcode(e) == MERGED_IF else [])
+
         return log
 
     except Exception:
         # make folder fail gracefuly
         logger.exception(f"folder failed in a function.")
         return trace
+
+
+# An 'if' whose branches join again (see vm.merge_branches) is folded by
+# as_paths on its own, branch by branch, and carried through the folding of
+# the surrounding paths as a single opaque line under this opcode. fold_aux
+# turns it back into a regular 'if' - it's the only place that knows it
+# shouldn't fold the branches again, folding isn't idempotent.
+MERGED_IF = "merged_if"
 
 
 def make_fands(exp):
@@ -163,10 +174,18 @@ def as_paths(trace, path=None):
 
     trace = replace_f(trace, make_fands)
 
-    for line in trace:
+    for idx, line in enumerate(trace):
         if opcode(line) == "if":
-            # assumes 'ifs' end trace
             cond, if_true, if_false = line[1], line[2], line[3]
+
+            if idx + 1 < len(trace):
+                # The branches merge again and the trace goes on after the if
+                # (see vm.merge_branches). Fold each branch on its own and
+                # keep the if as a single line - unfolding it would double
+                # the number of paths, which is what merging avoided.
+                path += ((MERGED_IF, cond, fold(if_true), fold(if_false)),)
+                continue
+
             return as_paths(if_true, path + (cond,)) + as_paths(
                 if_false, path + (is_zero(cond),)
             )
@@ -215,12 +234,19 @@ def fold_aux(trace):
 
     for idx, line in enumerate(trace):
         if opcode(line) == "while":
-            cond, trace, jds, setvars = line[1:]
+            cond, body, jds, setvars = line[1:]
 
-            trace = fold(trace)
-            line = ("while", cond, trace, jds, setvars)
+            body = fold(body)
+            line = ("while", cond, body, jds, setvars)
 
             out.append(line)
+
+        elif opcode(line) == MERGED_IF:
+            # the branches are folded already
+            _, cond, if_true, if_false = line
+            lines, merged = try_merge_ifs(cond, if_true, if_false)
+            out.extend(lines)
+            out.extend(join_if(*merged[1:]))
 
         elif opcode(line) == "if":
             if m := match(line, ("if", ":cond", ":if_true")):
@@ -254,23 +280,7 @@ def fold_aux(trace):
                 if_true = fold_aux(if_true)
                 if_false = fold_aux(if_false)
 
-                if (
-                    len(if_true) > 0
-                    and len(if_false) > 0
-                    and len(if_true) > 0
-                    and opcode(if_true[-1]) in TERMINATING
-                    and opcode(car(if_false)) not in ("invalid", "revert")
-                ):
-                    # ^ should be some more generic check that all if_true
-                    #   paths end with exit
-
-                    line = ("if", cond, if_true)
-                    out.append(line)
-                    out.extend(if_false)
-
-                else:
-                    line = ("if", cond, if_true, if_false)
-                    out.append(line)
+                out.extend(join_if(cond, if_true, if_false))
             else:
                 assert False, line
 
@@ -278,6 +288,29 @@ def fold_aux(trace):
             out.append(line)
 
     return out
+
+
+def join_if(cond, if_true, if_false):
+    # `if_true` and `if_false` went through fold_aux already
+    if not if_true and not if_false:
+        return []
+
+    if not if_true:
+        cond, if_true, if_false = is_zero(cond), if_false, []
+
+    if not if_false:
+        return [("if", cond, if_true)]
+
+    if opcode(if_true[-1]) in TERMINATING and opcode(car(if_false)) not in (
+        "invalid",
+        "revert",
+    ):
+        # ^ should be some more generic check that all if_true
+        #   paths end with exit
+
+        return [("if", cond, if_true)] + if_false
+
+    return [("if", cond, if_true, if_false)]
 
 
 """

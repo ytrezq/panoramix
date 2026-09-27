@@ -136,6 +136,17 @@ def opcode(exp):
         return exp[0]
 
 
+# Expressions bigger than this (in number of atoms) get a variable in the vm,
+# that the simplifier then doesn't inline. Normal contracts stay well below.
+MAX_EXP_SIZE = 150
+
+
+def exp_size(exp):
+    if type(exp) == tuple:
+        return sum(exp_size(e) for e in exp)
+    return 1
+
+
 def cached(func):
     cache = {}
 

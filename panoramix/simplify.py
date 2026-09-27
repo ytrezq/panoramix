@@ -60,8 +60,10 @@ from panoramix.prettify import (
 )
 from panoramix.utils.helpers import (
     C,
+    MAX_EXP_SIZE,
     cached,
     contains,
+    exp_size,
     find_f_list,
     find_f_set,
     find_op_list,
@@ -73,7 +75,6 @@ from panoramix.utils.helpers import (
     rewrite_trace,
     rewrite_trace_full,
     rewrite_trace_ifs,
-    rewrite_trace_multiline,
     to_exp2,
     walk_trace,
 )
@@ -203,11 +204,13 @@ def simplify_trace(trace, timeout=0):
     trace = replace_f(trace, postprocess_exp)
     trace = rewrite_trace_ifs(trace, postprocess_trace)
 
-    trace = rewrite_trace_multiline(trace, rewrite_string_stores, 3)
+    trace = rewrite_string_stores(trace)
     explain("using heuristics to clean up some things", trace)
 
-    for _ in range(3):
-        trace = cleanup_mems(trace)
+    if not should_quit():
+        # the most expensive pass, skipped if we're already out of time
+        for _ in range(3):
+            trace = cleanup_mems(trace)
 
     trace = cleanup_conds(trace)
     explain("final setmem/condition cleanup", trace)
@@ -1238,6 +1241,11 @@ def cleanup_conds(trace):
                 res.extend(if_true)
             elif ev is False:
                 res.extend(if_false)
+            elif not if_true and not if_false:
+                # can happen once the branches of a merged if got simplified
+                pass
+            elif not if_true:
+                res.append(("if", is_zero(cond), if_false, []))
             else:
                 res.append(("if", cond, if_true, if_false))
 
@@ -1337,6 +1345,12 @@ def _eval_msize(cond):
 
 
 def cleanup_msize(trace, current_msize=0):
+    res, _ = _cleanup_msize(trace, current_msize)
+    return res
+
+
+def _cleanup_msize(trace, current_msize=0):
+    """Returns the cleaned up trace, and the msize at the end of it."""
     res = []
 
     for line in trace:
@@ -1368,16 +1382,24 @@ def cleanup_msize(trace, current_msize=0):
                 new_msize = max_to_add(current_msize)
                 cond = replace(cond, "msize", new_msize)
 
-            if_true = cleanup_msize(if_true, current_msize)
-            if_false = cleanup_msize(if_false, current_msize)
+            if_true, msize_true = _cleanup_msize(if_true, current_msize)
+            if_false, msize_false = _cleanup_msize(if_false, current_msize)
             res.append(("if", cond, if_true, if_false))
+
+            # for what follows the if, when its branches merge again
+            if msize_true == msize_false:
+                current_msize = msize_true
+            else:
+                # we could take the max of both, but that gets expensive
+                # quickly, and msize isn't used by any recent compiler.
+                current_msize = "msize"
 
         else:
             line = replace(line, "msize", current_msize)
             res.append(line)
 
     #    print('done')
-    return res
+    return res, current_msize
 
 
 def overwrites_mem(line, mem_idx):
@@ -1391,6 +1413,10 @@ def overwrites_mem(line, mem_idx):
 
     if opcode(line) == "while":
         return while_touches_mem(line, mem_idx)
+
+    if opcode(line) == "if":
+        # matters for what comes after the if, when its branches merge again
+        return any(overwrites_mem(l, mem_idx) for l in line[2] + line[3])
 
     return False
 
@@ -1456,6 +1482,18 @@ def trace_uses_mem(trace, mem_idx):
     checks if memory is used anywhere in the trace
 
     """
+    return _mem_use(trace, mem_idx) == USED
+
+
+USED, OVERWRITTEN, NEITHER = "used", "overwritten", "neither"
+
+
+def _mem_use(trace, mem_idx):
+    """
+    USED if the trace reads the memory, OVERWRITTEN if every path through it
+    overwrites the memory (or ends the execution) before reading it, NEITHER
+    if it does neither and what comes after the trace may still read it.
+    """
 
     for idx, line in enumerate(trace):
         if m := match(line, ("setmem", ":memloc", ":memval")):
@@ -1463,47 +1501,82 @@ def trace_uses_mem(trace, mem_idx):
             memval = simplify_exp(memval)
 
             if exp_uses_mem(memval, mem_idx):
-                return True
+                return USED
 
             split = memloc_overwrite(
                 mem_idx, memloc
             )  # returns range that we're confident wasn't overwritten by memloc
             res2 = trace[idx + 1 :]
+            res = OVERWRITTEN
             for s_idx in split:
-                if trace_uses_mem(res2, s_idx):
-                    return True
+                r = _mem_use(res2, s_idx)
+                if r == USED:
+                    return USED
+                if r == NEITHER:
+                    res = NEITHER
 
-            return False
+            return res
 
         elif opcode(line) == "while":
             if while_uses_mem(line, mem_idx):
-                return True
+                return USED
 
         elif m := match(line, ("if", ":cond", ":if_true", ":if_false")):
-            if (
-                exp_uses_mem(m.cond, mem_idx)
-                or trace_uses_mem(m.if_true, mem_idx)
-                or trace_uses_mem(m.if_false, mem_idx)
-            ):
-                return True
+            if exp_uses_mem(m.cond, mem_idx):
+                return USED
+
+            res = []
+            for branch in (m.if_true, m.if_false):
+                r = _mem_use(branch, mem_idx)
+                if r == USED:
+                    return USED
+                if r == NEITHER and trace_ends_execution(branch):
+                    r = OVERWRITTEN
+                res.append(r)
+
+            if res == [OVERWRITTEN, OVERWRITTEN]:
+                return OVERWRITTEN
 
         elif opcode(line) == "continue":
-            return True
+            return USED
 
         else:
             if exp_uses_mem(line, mem_idx):
-                return True
+                return USED
 
-    return False
+            if opcode(line) in ENDS_EXECUTION:
+                return OVERWRITTEN
+
+    return NEITHER
 
 
-def cleanup_mems(trace):
+ENDS_EXECUTION = ("revert", "return", "stop", "invalid", "assert_fail", "selfdestruct")
+
+
+def trace_ends_execution(trace):
+    """True if every path through the trace ends the execution."""
+    if len(trace) == 0:
+        return False
+
+    last = trace[-1]
+
+    if opcode(last) == "if":
+        return trace_ends_execution(last[2]) and trace_ends_execution(last[3])
+
+    return opcode(last) in ENDS_EXECUTION
+
+
+def cleanup_mems(trace, used_after=None):
     """
     for every setmem, replace future occurences of it with it's value,
     if possible
 
+    `used_after` is what gets executed after `trace`, when `trace` is a
+    branch of an if whose branches merge again.
+
     """
 
+    used_after = used_after or []
     res = []
 
     for idx, line in enumerate(trace):
@@ -1530,10 +1603,10 @@ def cleanup_mems(trace):
                 # over everything that's left in the trace.
                 remaining_trace = replace_mem(trace[idx + 1 :], mem_idx, mem_val)
 
-            if trace_uses_mem(remaining_trace, mem_idx):
+            if trace_uses_mem(remaining_trace + used_after, mem_idx):
                 res.append(line)
 
-            res.extend(cleanup_mems(remaining_trace))
+            res.extend(cleanup_mems(remaining_trace, used_after))
 
             break
 
@@ -1551,8 +1624,9 @@ def cleanup_mems(trace):
 
         elif opcode(line) == "if":
             _, cond, if_true, if_false = line
-            if_true = cleanup_mems(if_true)
-            if_false = cleanup_mems(if_false)
+            after = trace[idx + 1 :] + used_after
+            if_true = cleanup_mems(if_true, after)
+            if_false = cleanup_mems(if_false, after)
             res.append(("if", cond, if_true, if_false))
 
         else:
@@ -1660,6 +1734,25 @@ def replace_mem(trace, mem_idx, mem_val):
                 res.extend(copy(trace[idx + 1 :]))
                 return res
 
+        elif opcode(line) == "if":
+            _, cond, if_true, if_false = line
+            cond = replace_mem_exp(cond, mem_idx, mem_val)
+            mem_idx_true = apply_constraint(mem_idx, cond)
+            mem_val_true = apply_constraint(mem_val, cond)
+            mem_idx_false = apply_constraint(mem_idx, is_zero(cond))
+            mem_val_false = apply_constraint(mem_val, is_zero(cond))
+
+            if_true = replace_mem(if_true, mem_idx_true, mem_val_true)
+            if_false = replace_mem(if_false, mem_idx_false, mem_val_false)
+
+            res.append(("if", cond, if_true, if_false))
+
+            if affects(line, mem_val) or affects(line, mem_id):
+                # one of the branches may have changed the memory, so
+                # what comes after the if (if anything) is left alone
+                res.extend(copy(trace[idx + 1 :]))
+                return res
+
         elif affects(line, mem_val) or affects(line, mem_id):
             res.extend(copy(trace[idx:]))
             return res
@@ -1676,19 +1769,6 @@ def replace_mem(trace, mem_idx, mem_val):
                 path = replace_mem(path, mem_idx, mem_val)
 
             res.append(("while", cond, path, jds, vars))
-
-        elif opcode(line) == "if":
-            _, cond, if_true, if_false = line
-            cond = replace_mem_exp(cond, mem_idx, mem_val)
-            mem_idx_true = apply_constraint(mem_idx, cond)
-            mem_val_true = apply_constraint(mem_val, cond)
-            mem_idx_false = apply_constraint(mem_idx, is_zero(cond))
-            mem_val_false = apply_constraint(mem_val, is_zero(cond))
-
-            if_true = replace_mem(if_true, mem_idx_true, mem_val_true)
-            if_false = replace_mem(if_false, mem_idx_false, mem_val_false)
-
-            res.append(("if", cond, if_true, if_false))
 
         else:
             # speed
@@ -1747,6 +1827,15 @@ def cleanup_vars(trace, required_after=None):
             _, var_idx, var_val = line
             # find all the future occurences of var and replace if possible
 
+            if exp_size(var_val) > MAX_EXP_SIZE:
+                # the vm gave a name to this expression because it's huge,
+                # inlining it would make everything else huge as well
+                res.append(line)
+                res.extend(
+                    cleanup_vars(trace[idx + 1 :], required_after=required_after)
+                )
+                return res
+
             remaining_trace = replace_var(trace[idx + 1 :], var_idx, var_val)
             if (
                 contains(remaining_trace, ("var", var_idx))
@@ -1790,8 +1879,21 @@ def cleanup_vars(trace, required_after=None):
 
         elif opcode(line) == "if":
             _, cond, if_true, if_false = line
-            if_true = cleanup_vars(if_true, required_after=required_after)
-            if_false = cleanup_vars(if_false, required_after=required_after)
+            # a variable set in a branch may be used after the if, when the
+            # branches merge again
+            required = required_after + find_op_list(trace[idx + 1 :], "var")
+            if_true = cleanup_vars(
+                if_true,
+                required_after=(
+                    required_after if trace_ends_execution(if_true) else required
+                ),
+            )
+            if_false = cleanup_vars(
+                if_false,
+                required_after=(
+                    required_after if trace_ends_execution(if_false) else required
+                ),
+            )
             res.append(("if", cond, if_true, if_false))
         else:
             res.append(line)
@@ -1833,7 +1935,20 @@ def replace_var(trace, var_idx, var_val):
 
             line = ("while", cond, path, jd, setvars)
 
-        if affects(line, var_val):
+        if opcode(line) == "if":
+            _, cond, if_true, if_false = line
+            cond = replace(cond, var_id, var_val)
+            if_true = replace_var(if_true, var_idx, var_val)
+            if_false = replace_var(if_false, var_idx, var_val)
+            res.append(("if", cond, if_true, if_false))
+
+            if affects(line, var_val):
+                # one of the branches may have changed the memory the value
+                # depends on, so what comes after the if is left alone
+                res.extend(copy(trace[idx + 1 :]))
+                return res
+
+        elif affects(line, var_val):
             res.append(line)
             res.extend(copy(trace[idx + 1 :]))
             return res
@@ -1841,13 +1956,6 @@ def replace_var(trace, var_idx, var_val):
         elif opcode(line) == "while":
             assert not affects(line, var_val)
             res.append(line)  # could replace vars inside of while, skipping for now
-
-        elif opcode(line) == "if":
-            _, cond, if_true, if_false = line
-            cond = replace(cond, var_id, var_val)
-            if_true = replace_var(if_true, var_idx, var_val)
-            if_false = replace_var(if_false, var_idx, var_val)
-            res.append(("if", cond, if_true, if_false))
 
         else:
             res.append(replace(line, var_id, var_val))
@@ -1915,7 +2023,8 @@ def move_right(left, right, exp):
 
 
 def normalize(cond):
-    cond = tuple(cleanup_mul_1(cond))
+    if type(cond) == tuple:
+        cond = tuple(cleanup_mul_1(cond))
 
     if opcode(cond) not in ("lt", "le", "gt", "ge"):
         cond = ("lt", 0, cond)
@@ -2063,8 +2172,9 @@ def extract_paths(while_exp):
 
         if opcode(line) == "if":
             _, cond, if_true, if_false = line
-            res_true = f(if_true, jd, so_far + [("require", cond)])
-            res_false = f(if_false, jd, so_far + [("require", is_zero(cond))])
+            rest = trace[1:]  # non-empty when the branches merge again
+            res_true = f(if_true + rest, jd, so_far + [("require", cond)])
+            res_false = f(if_false + rest, jd, so_far + [("require", is_zero(cond))])
             return res_true + res_false
 
         if len(trace) == 1:
@@ -2079,11 +2189,44 @@ def extract_paths(while_exp):
 
 
 def extract_setmems(while_exp):
-    paths = extract_paths(while_exp)
-    res = []
-    for p in paths:
-        res += find_setmems(p)
-    return res
+    """
+    The setmems of the loop body that are on a path to a `continue` (the
+    ones on the paths leaving the loop don't matter to what comes after it).
+
+    Same as collecting them from extract_paths, without enumerating the paths,
+    which are exponential in the number of ifs in the body.
+    """
+    op, _, trace, jd, setvars = while_exp
+    assert op == "while"
+
+    def f(trace, after):
+        # `after`: whether a continue is reachable from the end of `trace`.
+        # Returns the setmems on the paths through `trace` that reach a
+        # continue, and whether there are such paths.
+        res = []
+        reach = after
+
+        for line in reversed(trace):
+            if opcode(line) == "continue":
+                reach = True
+
+            elif opcode(line) in ENDS_EXECUTION:
+                reach = False
+
+            elif opcode(line) == "if":
+                res_true, reach_true = f(line[2], reach)
+                res_false, reach_false = f(line[3], reach)
+                res = res_true + res_false + res
+                reach = reach_true or reach_false
+
+            elif reach and opcode(line) in ("setmem", "while"):
+                res = find_setmems([line]) + res
+
+        return res, reach
+
+    res, _ = f(trace, False)
+
+    return list(dict.fromkeys(res))
 
 
 def extract_mems(while_exp):
@@ -2285,7 +2428,16 @@ def parse_counters(line):
     a["endvars"] = {}
     for v in setvars:
         var_idx, var_val = v[1], to_real_int(v[2])
-        var_diff = to_real_int(stepvars[var_idx][1])
+        step = stepvars.get(var_idx)
+        if not (
+            match(step, ("add", ":diff", ("var", var_idx)))
+            or match(step, ("add", ":diff", ("mul", 1, ("var", var_idx))))
+        ):
+            # not a var that gets incremented on every iteration (e.g. one
+            # that is set in a branch), we can't tell its value after the loop
+            del a["endvars"]
+            return a
+        var_diff = to_real_int(step[1])
         assert type(num_loops) != list
         var_stop = add_op(var_val, mul_op(var_diff, num_loops))
         a["endvars"][var_idx] = var_stop

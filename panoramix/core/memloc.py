@@ -163,8 +163,12 @@ def split_or(value):
             value = apply_mask(value, size, offset, shl)
 
         elif (m := match(value, ("mem", ":idx"))) and add_op(offset, shl) == 0:
-            new_memloc = apply_mask_to_range(m.idx, size, offset)
-            value = ("mem", new_memloc)
+            try:
+                new_memloc = apply_mask_to_range(m.idx, size, offset)
+                value = ("mem", new_memloc)
+            except AssertionError:
+                # e.g. a size we can't compare with the range length (yet)
+                value = mask_op(value, size=size, offset=offset, shl=shl)
 
         else:
             value = mask_op(value, size=size, offset=offset, shl=shl)

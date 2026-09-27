@@ -4,7 +4,8 @@ import os
 import os.path
 import traceback
 
-from panoramix.matcher import match
+from panoramix.core.arithmetic import is_zero
+from panoramix.matcher import Any, match
 from panoramix.utils.helpers import (
     COLOR_GRAY,
     ENDC,
@@ -75,6 +76,8 @@ class Loader(EasyCopy):
         self.func_dests = {}  # func_name -> jumpdest
         self.hash_targets = {}  # hash -> (jumpdest, stack)
         self.func_list = []
+        # conditions known to hold in the default function: no selector matched
+        self.fallback_known = ()
 
         self.binary = None
 
@@ -111,6 +114,22 @@ class Loader(EasyCopy):
 
             for fx_hash, target, stack in func_list:
                 self.add_func(target=target, hash=fx_hash, stack=stack)
+
+            # The default function is reached when none of the selector
+            # comparisons matched. Knowing that spares the VM from exploring
+            # every other function again when decompiling it.
+
+            def selector_checks(exp):
+                if (
+                    (m := match(exp, ("if", ":cond", ":if_true", Any)))
+                    and len(m.if_true) > 0
+                    and match(m.if_true[-1], ("funccall", Any, Any, Any))
+                ):
+                    return [is_zero(m.cond)]
+                else:
+                    return []
+
+            self.fallback_known = tuple(find_f_list(trace, selector_checks))
 
             # find default
 
