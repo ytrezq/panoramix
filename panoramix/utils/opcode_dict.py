@@ -273,6 +273,7 @@ stack_diffs = {
     "revert": -2,
     "assert_fail": 0,
     "push": 1,
+    "push0": 1,
     "dup": 1,
     "swap": 0,
     "push1": 1,
