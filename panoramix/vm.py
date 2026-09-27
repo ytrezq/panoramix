@@ -1074,9 +1074,10 @@ class VM(EasyCopy):
             )
 
         elif op == "byte":
+            # the idx-th byte of val, the most significant one first
+            idx = stack.pop()
             val = stack.pop()
-            num = stack.pop()
-            off = sub_op(256, to_bytes(num))
+            off = sub_op(248, mul_op(8, idx))
             stack.append(mask_op(val, 8, off, shr=off))
 
         elif op == "selfbalance":
