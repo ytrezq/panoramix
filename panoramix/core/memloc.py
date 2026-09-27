@@ -159,7 +159,7 @@ def split_or(value):
         stor_size = size
         stor_offset = add_op(offset, shl)
         shl = sub_op(shl, stor_offset)
-        if type(value) == int:
+        if type(value) == int and all_concrete(size, offset, shl):
             value = apply_mask(value, size, offset, shl)
 
         elif (m := match(value, ("mem", ":idx"))) and add_op(offset, shl) == 0:

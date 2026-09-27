@@ -526,8 +526,12 @@ def _ge_zero(exp):
     if opcode(exp) in ["cd", "storage", "msize"]:
         return True
 
-    if opcode(exp) in ["add", "or"]:
+    if opcode(exp) == "add":
         return add_ge_zero(exp)
+
+    if opcode(exp) == "or":
+        # the sign bit is set iff it is in one of the terms
+        return all(ge_zero(e) for e in exp[1:])
 
     if opcode(exp) in ("var", "ext_call.return_data"):
         return True
@@ -1010,6 +1014,10 @@ def apply_mask(val, size, offset=0, shl=0):
 
     mask = mask_to_int(size, offset)
     val = val & mask
+
+    if shl >= 256 or shl <= -256:
+        # shifted out of the word entirely
+        return 0
 
     if shl > 0:
         val = val << shl
