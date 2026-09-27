@@ -45,10 +45,10 @@ def fold_stacks(self, latter, depth):
 
 class Stack(EasyCopy):
     def __init__(self, val=None):
-        if type(val) == tuple:
-            val = list(val)
-
-        self.stack = val or []
+        # a copy: the VM works on the stack in place, and the node it's
+        # taken from keeps the one it starts with (loops are found by
+        # comparing those)
+        self.stack = list(val) if val else []
 
     def __str__(self):
         return (
