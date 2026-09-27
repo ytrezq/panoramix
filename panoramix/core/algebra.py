@@ -18,7 +18,7 @@
 import numbers
 import logging
 
-from panoramix.core.variants import variants
+from panoramix.core.variants import extract_variables, variants
 from panoramix.matcher import Any, match
 from panoramix.utils.helpers import EasyCopy, all_concrete, cached, opcode, to_exp2
 
@@ -126,19 +126,31 @@ def add_ge_zero(exp):
     if type(exp) == int:
         return exp >= 0
 
-    #    print(exp)
-    var = tuple(simplify(calc_max(e)) for e in variants(exp))
-
-    if not all_concrete(*var):
+    if len(extract_variables(exp)) > MAX_VARIANT_VARIABLES:
+        # the number of variants is exponential in that
         return None
 
-    if all(v >= 0 for v in var):
-        return True
+    seen_neg = seen_nonneg = False
 
-    if all(v < 0 for v in var):
-        return False
+    for e in variants(exp):
+        v = simplify(calc_max(e))
 
-    return None
+        if not all_concrete(v):
+            return None
+
+        if v >= 0:
+            seen_nonneg = True
+        else:
+            seen_neg = True
+
+        if seen_neg and seen_nonneg:
+            return None
+
+    return not seen_neg
+
+
+# 3^7 variants at most, see variants.py
+MAX_VARIANT_VARIABLES = 7
 
 
 def minus_op(exp):
