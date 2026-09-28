@@ -709,7 +709,9 @@ def _max_op(base, what):
 
     res.append(what)
 
-    res = tuple(set(res))
+    # dedupe, keeping the order (a set would order the terms by their
+    # hashes, i.e. differently from one run to the next)
+    res = tuple(dict.fromkeys(res))
     if len(res) > 1:
         return ("max",) + res
     return res[0]
