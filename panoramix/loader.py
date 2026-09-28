@@ -17,7 +17,7 @@ from panoramix.utils.helpers import (
     pretty_bignum,
 )
 from panoramix.utils.opcode_dict import opcode_dict
-from panoramix.utils.signatures import get_func_name, make_abi
+from panoramix.utils.signatures import fix_input_names, get_func_name, make_abi
 from panoramix.utils.supplement import fetch_sig
 
 logger = logging.getLogger(__name__)
@@ -57,6 +57,10 @@ class Loader(EasyCopy):
 
         # duplicate of get_func_name from signatures
         assert "inputs" in a
+        # (make_abi does the same for the contract's own functions, on the
+        # same cached dict, so the name of an external call used to depend
+        # on whether the contract had the function itself)
+        fix_input_names(a["inputs"])
         res = "{}({})".format(
             a["name"],
             ", ".join(
