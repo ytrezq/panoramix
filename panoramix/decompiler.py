@@ -19,6 +19,13 @@ from panoramix.utils.helpers import C, rewrite_trace
 
 logger = logging.getLogger(__name__)
 
+# The time given to each step of a function (the execution, the
+# simplification) and to a function as a whole, in seconds. PANORAMIX_TIMEOUT
+# scales them (e.g. 10 for a slow machine, or to compare outputs).
+_scale = float(os.environ.get("PANORAMIX_TIMEOUT", "1"))
+STEP_TIMEOUT = 60 * _scale
+FUNCTION_TIMEOUT = 60 * 3 * _scale
+
 
 @dataclasses.dataclass
 class Decompilation:
@@ -154,11 +161,15 @@ def _decompile_with_loader(loader, only_func_name=None) -> Decompilation:
             if target > 1 and loader.lines[target][1] == "jumpdest":
                 target += 1
 
-            @timeout_decorator.timeout(60 * 3, timeout_exception=TimeoutInterrupt)
+            @timeout_decorator.timeout(
+                FUNCTION_TIMEOUT, timeout_exception=TimeoutInterrupt
+            )
             def dec():
                 logger.info(" -> Interpreting EVM on function...")
                 known = loader.fallback_known if hash == "_fallback" else ()
-                trace = VM(loader).run(target, stack=stack, timeout=60, known=known)
+                trace = VM(loader).run(
+                    target, stack=stack, timeout=STEP_TIMEOUT, known=known
+                )
                 explain("Initial decompiled trace", trace[1:])
 
                 if "--explain" in sys.argv:
@@ -168,7 +179,7 @@ def _decompile_with_loader(loader, only_func_name=None) -> Decompilation:
                     explain("Without assembly", trace)
 
                 logger.info(" -> Cleaning up AST, identifying loops...")
-                trace = make_whiles(trace, timeout=60)
+                trace = make_whiles(trace, timeout=STEP_TIMEOUT)
                 explain("final", trace)
 
                 if "--explain" in sys.argv:
