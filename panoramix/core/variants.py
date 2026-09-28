@@ -120,7 +120,19 @@ def replace(exp, idx, val):
 
 
 def replace_dict(exp, dic):
-    for idx, val in dic.items():
-        exp = replace(exp, idx, val)
+    """
+    replaces every variable of `dic` in `exp` with its value, all at once:
+    a variable that contains another one (e.g. mem[_5] and _5) must be
+    replaced before it, otherwise the result depends on the order of the
+    dict, which depends on the hash seed
+    """
+    try:
+        if exp in dic:
+            return dic[exp]
+    except TypeError:  # unhashable
+        pass
 
-    return exp
+    if type(exp) != tuple:
+        return exp
+
+    return tuple(replace_dict(e, dic) for e in exp)

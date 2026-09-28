@@ -79,6 +79,10 @@ def mask_to_int(size, offset):
     assert type(size) in (int, float), size
     assert type(offset) in (int, float), offset
 
+    # masks never exceed 256 bits, and 2 ** a huge number would exhaust the memory
+    size = max(min(size, 4096), -4096)
+    offset = max(min(offset, 4096), -4096)
+
     return (2**size - 1) * (2**offset)
 
 
