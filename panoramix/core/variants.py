@@ -97,7 +97,11 @@ def possibilities(var):
                 yield p
 
                 if current == ("mem", ("range", 64, 32)):
-                    yield {current: 96}
+                    # (used to yield {current: 96} alone, without the other
+                    # variables: a variant that isn't concrete, so the
+                    # result depended on the order of the set of variables,
+                    # i.e. on the hash seed)
+                    p[current] = 96
                 elif current == "calldatasize":
                     p[current] = 6
                 else:
