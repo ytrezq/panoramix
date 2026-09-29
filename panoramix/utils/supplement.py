@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import lzma
@@ -16,8 +17,9 @@ from panoramix.utils.helpers import (
     data/abi_dump.xz has one json object per line:
         {"selector": "0xa9059cbb", "abi": {"name": "transfer", "inputs": [...], ...}}
 
-    It is loaded once into an sqlite database in the cache directory:
+    It is loaded into an sqlite database in the cache directory:
         abi(selector TEXT PRIMARY KEY, abi TEXT) - abi is the json of the "abi" field
+    and loaded again whenever the dump changes (its user_version tells which one it has).
 
 """
 
@@ -28,12 +30,38 @@ def abi_path():
     return cache_dir() / "abi_db.sqlite3"
 
 
+def dump_path():
+    return Path(__file__).parent.parent / "data" / "abi_dump.xz"
+
+
+@cached
+def dump_version() -> int:
+    """A number that identifies the dump, from 1 to 2^31-1 to fit in user_version."""
+    sha = hashlib.sha256()
+    with open(dump_path(), "rb") as f:
+        while chunk := f.read(1 << 20):
+            sha.update(chunk)
+    return int.from_bytes(sha.digest()[:4], "big") % (2**31 - 1) + 1
+
+
+def db_version() -> Optional[int]:
+    try:
+        db = sqlite3.connect(abi_path().as_uri() + "?mode=ro", uri=True)
+    except sqlite3.Error:  # no database yet
+        return None
+    try:
+        return db.execute("PRAGMA user_version").fetchall()[0][0]
+    except sqlite3.Error:  # not an sqlite file
+        return None
+    finally:
+        db.close()
+
+
 def check_supplements():
-    if abi_path().is_file():
+    if db_version() == dump_version():
         return
 
-    compressed_supplements = Path(__file__).parent.parent / "data" / "abi_dump.xz"
-    logger.info("Loading %s into %s...", compressed_supplements, abi_path())
+    logger.info("Loading %s into %s...", dump_path(), abi_path())
 
     # The database is built next to its final place and moved there once it's
     # complete: an interrupted load (timeout, ^C...) must not leave behind a
@@ -47,10 +75,11 @@ def check_supplements():
             # No journal: if anything goes wrong, the whole file is thrown away.
             db.executescript(
                 "PRAGMA journal_mode = OFF;"
+                f"PRAGMA user_version = {dump_version()};"
                 "CREATE TABLE abi (selector TEXT PRIMARY KEY, abi TEXT NOT NULL)"
                 " WITHOUT ROWID;"
             )
-            with lzma.open(compressed_supplements) as inf:
+            with lzma.open(dump_path()) as inf:
                 entries = (json.loads(line) for line in inf)
                 db.executemany(
                     "INSERT OR REPLACE INTO abi VALUES (?, ?)",
