@@ -596,10 +596,11 @@ def simplify_exp(exp):
     ):
         return apply_mask(m.val, m.size, m.offset, m.shl)
 
-    if m := match(
-        exp,
-        ("mask_shl", ":size", 5, ":shl", ("add", 31, ("mask_shl", 251, 0, 5, ":val"))),
+    if (m := match(exp, ("mask_shl", ":size", 5, ":shl", ("add", 31, ":val")))) and (
+        match(m.val, ("mask_shl", 251, 0, 5, Any))
     ):
+        # the val is a multiple of 32: adding 31 doesn't change its bits above
+        # the 5 lowest (ceil32 of a multiple of 32 is the number)
         return simplify_exp(("mask_shl", m.size, 5, m.shl, m.val))
 
     if opcode(exp) == "mul":
