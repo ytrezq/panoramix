@@ -446,7 +446,8 @@ def simplify_exp(exp):
     if m := match(
         exp, ("mask_shl", ":size", 0, 0, ("div", ":expr", ("exp", 256, ":shr")))
     ):
-        exp = mask_op(simplify_exp(m.expr), m.size, 0, shr=bits(m.shr))
+        shift = bits(m.shr)
+        exp = mask_op(simplify_exp(m.expr), m.size, shift, shr=shift)
 
     if (
         m := match(exp, ("mask_shl", Any, Any, ":shl", ("storage", ":size", Any, Any)))
