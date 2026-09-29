@@ -475,14 +475,14 @@ class Function(EasyCopy):
         if (
             opcode(first) == "if"
             and simplify_bool(first[1]) == "callvalue"
-            and (first[2][0] == ("revert", 0) or opcode(first[2][0]) == "invalid")
+            and (first[2][0] == ("revert", None) or opcode(first[2][0]) == "invalid")
         ):
             self.trace = self.trace[0][3]
             self.payable = False
         elif (
             opcode(first) == "if"
             and simplify_bool(first[1]) == ("iszero", "callvalue")
-            and (first[3][0] == ("revert", 0) or opcode(first[3][0]) == "invalid")
+            and (first[3][0] == ("revert", None) or opcode(first[3][0]) == "invalid")
         ):
             self.trace = self.trace[0][2]
             self.payable = False

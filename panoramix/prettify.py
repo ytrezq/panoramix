@@ -272,7 +272,7 @@ def pprint_logic(exp, indent=2):
         if (
             len(if_true) == 1
             and (first := if_true[0])
-            and ((first == ("revert", 0)) or opcode(first) == "invalid")
+            and ((first == ("revert", None)) or opcode(first) == "invalid")
         ):
             yield " " * indent + "require " + prettify(
                 is_zero(exp[1]), add_color=True, parentheses=False, rem_bool=True
@@ -289,7 +289,7 @@ def pprint_logic(exp, indent=2):
         if (
             len(if_false) == 1
             and (first := if_false[0])
-            and (first == ("revert", 0) or opcode(first) == "invalid")
+            and (first == ("revert", None) or opcode(first) == "invalid")
         ):
             yield " " * indent + "require " + prettify(
                 exp[1], add_color=True, parentheses=False, rem_bool=True
@@ -301,7 +301,7 @@ def pprint_logic(exp, indent=2):
         elif (
             len(if_true) == 1
             and (first := if_true[0])
-            and ((first == ("revert", 0)) or opcode(first) == "invalid")
+            and ((first == ("revert", None)) or opcode(first) == "invalid")
         ):
             yield " " * indent + "require " + prettify(
                 is_zero(exp[1]), add_color=True, parentheses=False, rem_bool=True
@@ -675,7 +675,7 @@ def pretty_line(r, add_color=True):
         else:
             yield "revert"
 
-    elif r == ("revert", 0) or r == ("revert", ("mem", 0, 0)):
+    elif r == ("revert", None):
         yield "revert"
 
     elif (

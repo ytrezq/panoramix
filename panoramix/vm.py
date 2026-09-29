@@ -222,7 +222,7 @@ class Node:
         ):
             # the loader looks for these to find the default function
             begin = [("jd", str(self.jd[0]))]
-        elif self.vm.just_fdests and self.trace != [("revert", 0)]:
+        elif self.vm.just_fdests and self.trace != [("revert", None)]:
             t = self.trace[0]
             if match(t, ("jump", ":target_node", ...)):
                 begin = [("jd", str(self.jd[0]))]  # , str(self.trace))]
@@ -936,7 +936,8 @@ class VM(EasyCopy):
                 # ("return", 0) returns a word, 0
                 trace.append(("stop",))
             elif n == 0:
-                trace.append((op, 0))
+                # likewise, ("revert", 0) reverts with a word, 0
+                trace.append((op, None))
             else:
                 return_data = mem_load(p, n)
                 trace.append(
@@ -1362,7 +1363,7 @@ class VM(EasyCopy):
 
             elif arg_len == 4:
                 fname = mem_load(arg_start, 4)
-                fparams = 0
+                fparams = None
 
             else:
                 fname = mem_load(arg_start, 4)
@@ -1403,7 +1404,7 @@ class VM(EasyCopy):
 
             elif arg_len == 4:
                 fname = mem_load(arg_start, 4)
-                fparams = 0
+                fparams = None
 
             else:
                 fname = mem_load(arg_start, 4)
