@@ -1052,7 +1052,7 @@ class VM(EasyCopy):
                 stack.append(sub_op(left, right))
 
         elif op in ["mulmod", "addmod"]:
-            stack.append(("mulmod", stack.pop(), stack.pop(), stack.pop()))
+            stack.append((op, stack.pop(), stack.pop(), stack.pop()))
 
         elif op == "shl":
             off = stack.pop()

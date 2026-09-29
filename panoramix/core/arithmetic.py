@@ -341,7 +341,7 @@ def add(left, right):
     return (left + right) & UINT_256_MAX
 
 
-def addmod(left, right, mode):
+def addmod(left, right, mod):
     if mod == 0:
         return 0
     else:

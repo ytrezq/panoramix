@@ -1025,9 +1025,8 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
     if exp == ("mask_shl", 160, 0, 0, "origin"):
         return "tx.origin"
 
-    if m := match(exp, ("mulmod", ":a", ":b", ":c")):
-        return f"mulmod({pret(m.a)}, {pret(m.b)}, {pret(m.c)})"  # mulmod should really be replaced by mul & mod in other stages
-        # but this is rare enough to ignore for now
+    if (m := match(exp, (":op", ":a", ":b", ":c"))) and m.op in ("mulmod", "addmod"):
+        return f"{m.op}({pret(m.a)}, {pret(m.b)}, {pret(m.c)})"
 
     if exp == "origin":
         return "tx.origin"
