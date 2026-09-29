@@ -1200,11 +1200,12 @@ class VM(EasyCopy):
             memloc = stack.pop()
             val = stack.pop()
 
+            # the lowest byte of val, into one byte of memory
             trace(
                 (
                     "setmem",
-                    ("range", memloc, 8),
-                    val,
+                    ("range", memloc, 1),
+                    mask_op(val, 8),
                 )
             )
 
