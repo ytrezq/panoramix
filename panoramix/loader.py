@@ -15,7 +15,6 @@ from panoramix.utils.helpers import (
     find_f_list,
     opcode,
     padded_hex,
-    pretty_bignum,
 )
 from panoramix.utils.opcode_dict import opcode_dict
 from panoramix.utils.signatures import fix_input_names, get_func_name, make_abi
@@ -393,12 +392,6 @@ class Loader(EasyCopy):
         self.lines = {}
 
         for line_no, op, param in parsed_lines:
-            if op.startswith("push") and param > 1000000000000000:
-                param = pretty_bignum(
-                    param
-                )  # convert big numbers into strings if possibble
-                # should be moved to prettify really
-
             if op[:3] == "dup":
                 param = int(op[3:])
                 op = "dup"
