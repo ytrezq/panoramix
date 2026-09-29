@@ -17,7 +17,13 @@ from panoramix.core.algebra import (
     to_bytes,
     CannotCompare,
 )
-from panoramix.core.arithmetic import VOLATILE, is_zero, mentions, simplify_bool
+from panoramix.core.arithmetic import (
+    VOLATILE,
+    changed_reads,
+    is_zero,
+    mentions,
+    simplify_bool,
+)
 from panoramix.matcher import match
 from panoramix.prettify import pprint_trace
 from panoramix.utils.helpers import (
@@ -29,6 +35,7 @@ from panoramix.utils.helpers import (
     opcode,
     precompiled,
     precompiled_var_names,
+    replace,
 )
 
 from .loader import apply_entry, entry_known
@@ -960,6 +967,30 @@ class VM(EasyCopy):
 
         return None
 
+    def snapshot(self, trace, op, target=None):
+        """
+        Before an instruction that changes the state, what was read from it
+        and is still on the stack gets a variable: afterwards, the expression
+        of the read (e.g. ("storage", 256, 0, 4)) stands for what's there
+        then, not for what was read.
+
+        e.g. arr.push(x) reads the length, stores it plus one, and stores x
+        at the old length.
+        """
+        reads = []
+        for item in self.stack.stack:
+            for r in changed_reads(item, op, target):
+                if r not in reads:
+                    reads.append(r)
+
+        for r in reads:
+            self.counter += 1
+            vname = f"_{self.counter}"
+            trace(("setvar", vname, r))
+            self.stack.stack = [
+                replace(item, r, ("var", vname)) for item in self.stack.stack
+            ]
+
     def apply_stack(self, ret, line):
         def trace(exp, *format_args):
             try:
@@ -977,6 +1008,11 @@ class VM(EasyCopy):
         op = line[1]
 
         previous_len = stack.len()
+
+        if op in ("sstore", "tstore"):
+            self.snapshot(trace, op, stack.stack[-1])
+        elif op in STATE_CHANGING_OPS and op != "selfdestruct":
+            self.snapshot(trace, op)
 
         if op == "sstore":
             self.known = forget(self.known, ("storage",))

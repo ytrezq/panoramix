@@ -62,6 +62,7 @@ VOLATILE = (
     "mem",
     "msize",
     "tload",
+    "return_data",
 )
 
 
@@ -75,6 +76,88 @@ def mentions(exp, names):
 
 def is_volatile(exp):
     return mentions(exp, VOLATILE)
+
+
+# the results of the last external call (or creation, or precompile)
+CALL_RESULTS = (
+    "ext_call",
+    "returndatasize",
+    "return_code",
+    "return_data",
+    "new_address",
+    "memcopy",
+    ".result",
+)
+
+
+def state_read(exp):
+    """
+    What part of the state exp reads, if it's a read that an expression
+    keeps making: "storage", "tload", "account" (a balance, a code),
+    "call" (a result of the last call), None if it's none of these.
+    """
+    op = opcode(exp)
+    if op in ("storage", "tload"):
+        return op
+    if op in ("balance", "extcodesize", "extcodehash"):
+        return "account"
+    if type(exp) is str and any(n in exp for n in CALL_RESULTS):
+        return "call"
+    if type(op) is str and any(n in op for n in CALL_RESULTS):
+        return "call"
+    return None
+
+
+def may_alias(a, b):
+    """False if the storage slots (or transient keys) a and b are sure to differ."""
+    if a == b:
+        return True
+
+    if type(a) is int and type(b) is int:
+        return False
+
+    # a slot of a mapping or of a dynamic array (a hash) isn't a small one
+    for x, y in ((a, b), (b, a)):
+        if type(x) is int and x < 2**64 and type(y) is tuple:
+            if opcode(y) == "sha3" or (
+                opcode(y) == "add" and any(opcode(t) == "sha3" for t in y[1:])
+            ):
+                return False
+
+    return True
+
+
+def changed_by(exp, op, target=None):
+    """
+    True if exp, a read of the state, may have a different value after `op`
+    (with `target` the slot or key it writes, for sstore/store and tstore).
+    """
+    kind = state_read(exp)
+    if kind is None:
+        return False
+    if op in ("sstore", "store"):
+        return kind == "storage" and may_alias(exp[3], target)
+    if op == "tstore":
+        return kind == "tload" and may_alias(exp[1], target)
+    if op == "staticcall":
+        return kind == "call"
+    if op in ("call", "callcode", "delegatecall", "codecall", "create", "create2"):
+        return True
+    return False
+
+
+def changed_reads(exp, op, target=None):
+    """The reads of the state in exp that op may change, outermost first."""
+    if changed_by(exp, op, target):
+        return [exp]
+
+    res = []
+    if type(exp) is tuple:
+        for e in exp:
+            for r in changed_reads(e, op, target):
+                if r not in res:
+                    res.append(r)
+    return res
 
 
 def simplify_bool(exp):

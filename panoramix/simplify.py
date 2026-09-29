@@ -40,7 +40,7 @@ from panoramix.core.algebra import (
     to_bytes,
     try_add,
 )
-from panoramix.core.arithmetic import is_zero, to_real_int
+from panoramix.core.arithmetic import changed_reads, is_zero, to_real_int
 from panoramix.core.masks import get_bit, to_mask, to_neg_mask
 from panoramix.core.memloc import (
     apply_mask_to_range,
@@ -1429,7 +1429,37 @@ def overwrites_mem(line, mem_idx):
     return False
 
 
+def changes_reads(line, exp):
+    """
+    True if the line may change something that exp reads from the state (see
+    arithmetic.changed_by): the storage it writes, what a call can change...
+    """
+    op = opcode(line)
+    if op == "store":
+        return bool(changed_reads(exp, "store", line[3]))
+    if op == "tstore":
+        return bool(changed_reads(exp, "tstore", line[1]))
+    if op in (
+        "call",
+        "staticcall",
+        "delegatecall",
+        "callcode",
+        "codecall",
+        "create",
+        "create2",
+    ):
+        return bool(changed_reads(exp, op))
+    if op == "if":
+        return any(changes_reads(l, exp) for l in line[2] + line[3])
+    if op == "while":
+        return any(changes_reads(l, exp) for l in line[2])
+    return False
+
+
 def affects(line, exp):
+    if changes_reads(line, exp):
+        return True
+
     if type(exp) != tuple and exp != "msize":
         return False
 
@@ -1957,6 +1987,9 @@ def replace_var(trace, var_idx, var_val):
                 return res
 
         elif affects(line, var_val):
+            # what the line itself reads is read before it changes anything
+            if opcode(line) not in ("while", "if"):
+                line = replace(line, var_id, var_val)
             res.append(line)
             res.extend(copy(trace[idx + 1 :]))
             return res
