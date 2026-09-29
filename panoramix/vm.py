@@ -31,6 +31,7 @@ from panoramix.utils.helpers import (
     precompiled_var_names,
 )
 
+from .loader import apply_entry, entry_known
 from .stack import Stack, fold_stacks, stack_vars
 
 logger = logging.getLogger(__name__)
@@ -321,10 +322,15 @@ class VM(EasyCopy):
         stack=(),
         timeout=0,
         known=(),
+        entry=None,
     ):
         """
         `known` is a tuple of conditions known to hold when `start` is reached,
         e.g. for the default function: that no function selector matched.
+
+        `entry` is what runs before `start` (see loader.entry_paths), and
+        goes at the beginning of the trace. If it isn't known, the free memory
+        pointer is assumed to be 0x60, as the old compilers set it.
         """
         time_start = time.monotonic()
 
@@ -335,11 +341,16 @@ class VM(EasyCopy):
 
         self.should_quit = should_quit
 
+        if entry is None:
+            before = [("setmem", ("range", 0x40, 32), 0x60)]
+        else:
+            before = []
+            known = tuple(known) + entry_known(entry)
+
         func_node = Node(
             vm=self, start=start, safe=True, stack=list(stack), known=tuple(known)
         )
-        trace = [
-            ("setmem", ("range", 0x40, 32), 0x60),
+        trace = before + [
             ("jump", func_node, "safe", tuple()),
         ]
 
@@ -426,6 +437,8 @@ class VM(EasyCopy):
             )
 
         tr = root.make_trace()
+        if entry:
+            tr = apply_entry(entry, tr)
         return tr
 
     def expand_trace(self, root):

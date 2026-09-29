@@ -168,9 +168,13 @@ def _decompile_with_loader(loader, only_func_name=None) -> Decompilation:
                 logger.info(" -> Interpreting EVM on function...")
                 known = loader.fallback_known if hash == "_fallback" else ()
                 trace = VM(loader).run(
-                    target, stack=stack, timeout=STEP_TIMEOUT, known=known
+                    target,
+                    stack=stack,
+                    timeout=STEP_TIMEOUT,
+                    known=known,
+                    entry=loader.entry(hash),
                 )
-                explain("Initial decompiled trace", trace[1:])
+                explain("Initial decompiled trace", trace)
 
                 if "--explain" in sys.argv:
                     trace = rewrite_trace(

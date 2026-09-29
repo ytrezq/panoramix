@@ -13,6 +13,7 @@ from panoramix.utils.helpers import (
     colorize,
     find_f,
     find_f_list,
+    opcode,
     padded_hex,
     pretty_bignum,
 )
@@ -28,6 +29,126 @@ cache_sigs = {
 }
 
 LOADER_TIMEOUT = 60
+
+
+"""
+
+    What the contract does before it gets to a function.
+
+    The functions are decompiled from where the dispatcher jumps to them, but
+    what the dispatcher did on the way still holds: the memory it wrote (the
+    free memory pointer) and the checks it made - solc checks that there's no
+    ether sent before looking at the selector if no function is payable.
+
+    `entry` is that, in order: the memory writes, and ("check", cond, taken,
+    other) for every if on the path whose other branch reverts - not the ones
+    looking at the selector, the dispatch itself.
+
+"""
+
+
+def is_marker(line):
+    return type(line) is str or opcode(line) == "jd"
+
+
+def reverts(trace):
+    """True if the trace always reverts (without calling any function)."""
+    trace = [line for line in trace if not is_marker(line)]
+    if not trace:
+        return False
+
+    last = trace[-1]
+    if opcode(last) == "if":
+        return reverts(last[2]) and reverts(last[3])
+
+    return opcode(last) in ("revert", "invalid") and not any(
+        opcode(line) in ("funccall", "if") for line in trace[:-1]
+    )
+
+
+def is_dispatch(cond):
+    """A condition on the selector, or on calldatasize being at least 4."""
+    s = str(cond)
+    if str(("cd", 0)) in s:
+        return True
+
+    leaves = set(find_f_list(cond, lambda e: [e] if type(e) in (int, str) else []))
+    return leaves <= {"calldatasize", 4, "lt", "gt", "le", "ge", "iszero", "bool"}
+
+
+def strip_markers(trace):
+    res = []
+    for line in trace:
+        if is_marker(line):
+            continue
+        if opcode(line) == "if":
+            _, cond, if_true, if_false = line
+            line = ("if", cond, strip_markers(if_true), strip_markers(if_false))
+        res.append(line)
+    return res
+
+
+def entry_paths(trace, is_leaf, entry=()):
+    """(entry, leaf) for every line of the dispatcher's trace for which is_leaf."""
+    for line in trace:
+        if is_leaf(line):
+            yield entry, line
+
+        elif opcode(line) == "setmem":
+            entry = entry + (line,)
+
+        elif opcode(line) == "if":
+            _, cond, if_true, if_false = line
+            for taken, branch, other in (
+                (True, if_true, if_false),
+                (False, if_false, if_true),
+            ):
+                branch_entry = entry
+                if reverts(other) and not is_dispatch(cond):
+                    branch_entry += (
+                        ("check", cond, taken, tuple(strip_markers(other))),
+                    )
+                yield from entry_paths(branch, is_leaf, branch_entry)
+
+
+def apply_entry(entry, trace):
+    """The trace of a function, preceded by what runs before it."""
+    res = list(trace)
+    for item in reversed(entry):
+        if opcode(item) == "check":
+            _, cond, taken, other = item
+            if taken:
+                res = [("if", cond, res, list(other))]
+            else:
+                res = [("if", cond, list(other), res)]
+        else:
+            res = [item] + res
+
+    return res
+
+
+def entry_known(entry):
+    """The conditions that hold once past the entry."""
+    return tuple(
+        item[1] if item[2] else is_zero(item[1])
+        for item in entry
+        if opcode(item) == "check"
+    )
+
+
+def common_entry(entries):
+    """What all the given entries start with."""
+    entries = list(entries)
+    if not entries:
+        return ()
+
+    res = []
+    for items in zip(*entries):
+        if any(i != items[0] for i in items):
+            break
+        res.append(items[0])
+
+    return tuple(res)
 
 
 class Loader(EasyCopy):
@@ -82,6 +203,8 @@ class Loader(EasyCopy):
         self.func_list = []
         # conditions known to hold in the default function: no selector matched
         self.fallback_known = ()
+        # what runs before each function (see entry_paths), by hash
+        self.entries = {}
 
         self.binary = None
 
@@ -106,7 +229,7 @@ class Loader(EasyCopy):
             # and running VM in a special mode that returns 'funccall'
             # in places where it looks like there is a func call
 
-            trace = vm.run(0, timeout=LOADER_TIMEOUT)
+            trace = vm.run(0, timeout=LOADER_TIMEOUT, entry=())
 
             def func_calls(exp):
                 if m := match(exp, ("funccall", ":fx_hash", ":target", ":stack")):
@@ -118,6 +241,11 @@ class Loader(EasyCopy):
 
             for fx_hash, target, stack in func_list:
                 self.add_func(target=target, hash=fx_hash, stack=stack)
+
+            for entry, line in entry_paths(
+                trace, lambda line: opcode(line) == "funccall"
+            ):
+                self.entries.setdefault(padded_hex(line[1], 8), []).append(entry)
 
             # The default function is reached when none of the selector
             # comparisons matched. Knowing that spares the VM from exploring
@@ -154,6 +282,14 @@ class Loader(EasyCopy):
             default = find_f(trace, find_default) if func_list else None
             self.add_func(default or 0, name="_fallback")
 
+            if default:
+                for entry, line in entry_paths(
+                    trace, lambda line: line == ("jd", str(default))
+                ):
+                    self.entries.setdefault("_fallback", []).append(entry)
+            else:
+                self.entries["_fallback"] = [()]
+
         except Exception:
             logger.exception("Loader issue.")
             self.add_func(0, name="_fallback")
@@ -162,6 +298,15 @@ class Loader(EasyCopy):
         for hash, (target, stack) in self.hash_targets.items():
             fname = get_func_name(hash)
             self.func_list.append((hash, fname, target, stack))
+
+    def entry(self, hash):
+        """What runs before the function (see entry_paths), None if unknown."""
+        if hash not in self.entries:
+            return None
+
+        # a function the dispatcher jumps to from several places gets what
+        # they all have in common
+        return common_entry(self.entries[hash])
 
     def next_line(self, i):
         i += 1
