@@ -312,10 +312,12 @@ def simplify_exp(exp):
         and m.num % 32 == 31
         and m.num > 32
     ):
+        # floor32(num + x) = (num - 31) + floor32(31 + x), num - 31 being
+        # a multiple of 32
         add_terms = exp[-1][2:]  # the "..."
         exp = (
             "add",
-            m.num // 32,
+            m.num - 31,
             (
                 "mask_shl",
                 256,
