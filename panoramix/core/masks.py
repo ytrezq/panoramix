@@ -1,6 +1,6 @@
 from panoramix.utils.helpers import cached, cleanup_mul_1, opcode, to_exp2
 
-from panoramix.core.algebra import mul_op, sub_op
+from panoramix.core.algebra import mul_op
 
 
 def type_to_mask(s):
@@ -124,12 +124,10 @@ def to_mask(num):
             if mul == None:
                 return None
 
-            mask_pos = 0
+            # 2 ** mask_len - 1: the lowest mask_len bits
             mask_len = mul_op(mul, num[1][2])
 
-            # add type assert, that num[1][2] < 32?
-
-            return (mask_len, sub_op(256, mask_len))
+            return (mask_len, 0)
 
     if opcode(num) == "add" and num[1] == -1:
         return to_mask(
