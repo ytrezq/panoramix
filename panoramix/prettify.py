@@ -1214,8 +1214,6 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         return pretty_stor(exp, add_color=add_color)
 
     if m := match(exp, ("cd", ":num")):
-        if m.num == 0:
-            return col("call.func_hash", C.green)
         parsed_exp = get_param_name(exp, add_color=add_color)
 
         if type(parsed_exp) != str:
@@ -1275,6 +1273,13 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
 
     if m := match(exp, ("setmem", ":idx", ":val")):  # --,,--
         return pret(("mem", m.idx)) + " = " + pret(m.val)
+
+    if exp == ("mask_shl", 32, 224, 0, ("cd", 0)):
+        # the first 4 bytes of the calldata, as msg.sig
+        return col("call.func_hash", C.green)
+
+    if exp == ("mask_shl", 32, 224, -224, ("cd", 0)):
+        return wrap(col("call.func_hash", C.green) + " >> 224", SHIFT)
 
     if m := match(exp, ("mask_shl", ":size", ":offset", ":shl", ":val")):
         size, offset, shl, val = m.size, m.offset, m.shl, m.val

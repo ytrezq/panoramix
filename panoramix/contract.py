@@ -306,9 +306,6 @@ class Contract:
             ):
                 return ("div", ("mask", m.size + m.off, 0, m.e), 2**m.off)
 
-            elif exp == ("mask_shl", 32, 224, 0, ("cd", 0)):
-                return ("cd", 0)
-
             else:
                 return exp
 
