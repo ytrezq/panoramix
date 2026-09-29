@@ -33,6 +33,7 @@ from panoramix.core.algebra import (
     safe_lt_op,
     safe_max_op,
     safe_min_op,
+    shr_op,
     simplify,
     simplify_max,
     sub_op,
@@ -236,6 +237,10 @@ def simplify_trace(trace, timeout=0):
 def simplify_exp(exp):
     if type(exp) == list:
         return exp
+
+    if m := match(exp, ("shr", ":int:off", ":val")):
+        # a shift by an amount the vm didn't know, known now
+        exp = shr_op(m.val, m.off)
 
     if m := match(exp, ("mask_shl", 246, 5, 0, ":exp")):
         exp = (

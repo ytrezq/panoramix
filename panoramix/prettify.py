@@ -1278,6 +1278,23 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         else:
             return "Mask({}, {}, {})".format(pret(size), pret(offset), pret(val))
 
+    if (m := match(exp, (":op", ":off", ":val"))) and (
+        m.op == "sar" or (m.op == "shr" and not isinstance(m.off, int))
+    ):
+        # the shifts that the vm leaves as they are: the arithmetic ones (>>′,
+        # like the other signed operations), and the ones by a symbolic amount;
+        # in parentheses, since * and / are printed without
+        op_form = " >>′ " if m.op == "sar" else " >> "
+        if add_color:
+            op_form = COLOR_BOLD + op_form + ENDC
+        return (
+            "("
+            + prettify(m.val, parentheses=True, add_color=add_color)
+            + op_form
+            + prettify(m.off, parentheses=True, add_color=add_color)
+            + ")"
+        )
+
     #    if opcode(exp) in ('byte', 'bytes8', 'uint16', 'bytes4', 'addr', 'int256'):
     #        return prettify('{}({})'.format(opcode(exp).lower(), prettify(exp[1], add_color=add_color)), add_color=add_color)
 

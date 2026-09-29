@@ -1061,6 +1061,25 @@ def apply_mask(val, size, offset=0, shl=0):
     return val
 
 
+def shr_op(exp, off):
+    """
+    exp >> off: the bits [off, 256) of exp, moved down by off, the same mask
+    as a division by 2**off (see Stack.simplify).
+
+    A shift by a symbolic amount is left as ("shr", off, exp): its mask would
+    have a symbolic size too, Mask(256 - off, off, exp) >> off, which reads
+    worse and doesn't simplify any better. simplify_exp turns it into the mask
+    once the amount is known.
+    """
+    if not isinstance(off, int):
+        return ("shr", off, exp)
+
+    if off >= 256:
+        return 0
+
+    return mask_op(exp, size=256 - off, offset=off, shr=off)
+
+
 def try_add(self, other):
     if (res := _try_add(self, other)) is not None:
         return res

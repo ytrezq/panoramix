@@ -10,9 +10,9 @@ from panoramix.core.algebra import (
     bits,
     lt_op,
     mask_op,
-    minus_op,
     mul_op,
     or_op,
+    shr_op,
     sub_op,
     to_bytes,
     CannotCompare,
@@ -1031,7 +1031,7 @@ class VM(EasyCopy):
             if all_concrete(off, exp):
                 stack.append(exp >> off)
             else:
-                stack.append(mask_op(exp, offset=minus_op(off), shr=off))
+                stack.append(shr_op(exp, off))
 
         elif op == "sar":
             off = stack.pop()
@@ -1049,8 +1049,9 @@ class VM(EasyCopy):
                         shifted |= (2**256 - 1) << (256 - off)
                     stack.append(shifted)
             else:
-                # FIXME: This won't give the right result...
-                stack.append(mask_op(exp, offset=minus_op(off), shr=off))
+                # left as it is: no mask copies the sign bit into the bits
+                # shifted in
+                stack.append(("sar", off, exp))
 
         elif op in ["not", "iszero"]:
             stack.append((op, stack.pop()))
