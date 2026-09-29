@@ -974,6 +974,14 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
     if m := match(exp, ("bytes", ":size", ":val")):
         return pretty_bytes(m.size, m.val, add_color)
 
+    if m := match(exp, ("signextend", ":int:b", ":val")):
+        return (
+            col(f"int{8 * (m.b + 1)}(", COLOR_GRAY) + pret(m.val) + col(")", COLOR_GRAY)
+        )
+
+    if m := match(exp, ("signextend", ":b", ":val")):
+        return f"signextend({pret(m.b)}, {pret(m.val)})"
+
     if opcode(exp) == "arr" and len(exp) > 1:
         _, l, *terms = exp
         return (
@@ -1373,6 +1381,7 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         "sadd": " +′ ",
         "smul": " *′ ",
         "sdiv": " /′ ",
+        "smod": " %′ ",
         "xor": " xor ",
     }
 
