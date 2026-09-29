@@ -31,12 +31,31 @@ class CannotCompare(Exception):
 
 # copied from other modules, need to rework module structures
 # to avoid circular dependencies
+def _clamp_bits(k):
+    """
+    masks and shifts never exceed 256 bits, but a variant of an expression
+    (see variants.py) can put 2^230 there, and 2 ** that would exhaust the
+    memory
+    """
+    return max(min(k, 4096), -4096)
+
+
+def _pow2(k):
+    return 2 ** _clamp_bits(k)
+
+
 def mask_to_int(size, offset):
+    size = _clamp_bits(size)
+    offset = _clamp_bits(offset)
+
     if offset < 0:
         size = size + offset
         if size < 1:
             return 0
         return 2**size - 1
+
+    if size < 0:
+        return 0
 
     return (2**size - 1) * (2**offset)
 
@@ -1058,7 +1077,7 @@ def __try_add(self, other):
     ) and m.shl > 0:
         self = (
             "mul",
-            m.num + 2**m.shl,
+            m.num + _pow2(m.shl),
             ("mask_shl", m.size + m.shl, m.off, 0, m.val),
         )
 
@@ -1070,7 +1089,7 @@ def __try_add(self, other):
     ) and m.shl > 0:
         other = (
             "mul",
-            m.num + 2**m.shl,
+            m.num + _pow2(m.shl),
             ("mask_shl", m.size + m.shl, m.off, 0, m.val),
         )
 
@@ -1096,7 +1115,7 @@ def _try_add(self, other):
         )
         and mo.other_size == 256 - mo.shl
     ):
-        mo.mul *= 2**mo.shl - 1
+        mo.mul *= _pow2(mo.shl) - 1
         return mul_op(mo.mul, ms.val)
 
     #    if self, other == mul(x, exp), mul(y, exp)
