@@ -1,5 +1,4 @@
 import os
-import math
 import re
 import string
 import logging
@@ -482,11 +481,12 @@ def to_exp2(num):  # checks if num is a power of 2, and if so, returns to which 
     if num < 1:
         return None
 
-    l = math.log2(num)
-    if l.is_integer():
-        return int(l)
+    # (not with math.log2: a float has 53 bits, so 2**96 + 1 or 2**160 - 1
+    # would be powers of 2)
+    if num & (num - 1):
+        return None
 
-    return None
+    return num.bit_length() - 1
 
 
 def padded_hex(given_int, given_len):
