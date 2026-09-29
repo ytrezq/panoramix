@@ -430,7 +430,7 @@ def mask_to_mul(exp):
 
         if shl < 0 and offset == -shl and size == 256 - offset:
             if shl >= -8:
-                return ("div", 2**shl, val)
+                return ("div", val, 2**offset)
 
     return exp
 

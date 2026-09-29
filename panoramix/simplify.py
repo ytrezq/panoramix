@@ -285,6 +285,9 @@ def simplify_exp(exp):
         and m.moff == -m.off
         and m.size in (8, 16, 32, 64, 128)
         and m.off > 0
+        # the high bits only: the lower ones may be other fields packed
+        # in the same word, e.g. (x >> 160) & 0xffff isn't uint16(x)
+        and m.off + m.size == 256
     ):
         return (
             "mask_shl",
