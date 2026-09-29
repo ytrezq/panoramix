@@ -457,6 +457,10 @@ def safe_ge_zero(exp):
 
 
 def to_bytes(exp):
+    """
+    exp bits, as (bytes, bits left over): the bits left over are None if
+    it isn't known whether exp is a whole number of bytes.
+    """
     if type(exp) == int:
         return (exp + 7) // 8, exp % 8
 
@@ -465,37 +469,35 @@ def to_bytes(exp):
 
     if (
         m := match(exp, ("mask_shl", ":int:size", ":int:offset", ":int:shl", ":val"))
-    ) and m.shl >= 3:
+    ) and m.offset + m.shl >= 3:
+        # the lowest 3 bits are 0
         return ("mask_shl", m.size, m.offset, m.shl - 3, m.val), 0
 
-    if opcode(exp) == "mul" and len(exp) == 3:
+    if opcode(exp) == "mul" and len(exp) == 3 and type(exp[1]) == int:
         if exp[1] % 8 == 0:
-            return to_bytes(exp[1])
+            return ("mul", exp[1] // 8, exp[2]), 0
 
     if opcode(exp) == "add":
         res = []
         for e in exp[1:]:
-            if type(e) == int or opcode(e) == "mask_shl":
-                by, bi = to_bytes(e)
-                if bi == 0:
-                    res.append(by)
-                else:
-                    raise NotImplementedError(exp)
-
-            elif opcode(e) == "mul" and len(e) == 3:
-                if e[1] % 8 == 0:
-                    res.append(("mul", e[1] // 8, e[2]))
-                elif opcode(e[2]) == "mask_shl" and e[2][:4] == ("mask_shl", 253, 0, 3):
-                    res.append(("mul", e[1], e[2][4]))
-                else:
-                    raise NotImplementedError(exp)
-
+            if (
+                opcode(e) == "mul"
+                and len(e) == 3
+                and type(e[1]) == int
+                and opcode(e[2]) == "mask_shl"
+                and e[2][:4] == ("mask_shl", 253, 0, 3)
+            ):
+                by, bi = ("mul", e[1], e[2][4]), 0
             else:
-                raise NotImplementedError(exp)
+                by, bi = to_bytes(e)
+
+            if bi != 0:
+                return mask_op(exp, shr=3), None
+            res.append(by)
 
         return ("add",) + tuple(res), 0
 
-    return mask_op(exp, shr=3), 0
+    return mask_op(exp, shr=3), None
 
 
 def divisible_bytes(exp):
