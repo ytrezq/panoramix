@@ -202,6 +202,18 @@ def to_while(trace, jd, path=None):
             jds_true = find_f_list(if_true, get_jds)
             jds_false = find_f_list(if_false, get_jds)
 
+            if (
+                trace
+                and (jd in jds_true or jd in jds_false)
+                and jd not in find_f_list(trace, get_jds)
+            ):
+                # The branches merge again, but the loop doesn't go on after
+                # that: what follows the if is where the loop ends up when it
+                # is left - by the exit condition, a break, a return from
+                # inside it... The if is the body of the loop, which it leaves
+                # when it doesn't continue, and that follows it.
+                return [], path + [line], trace, ("bool", 1)
+
             if trace or (jd not in jds_true and jd not in jds_false):
                 # The branches merge again and the loop goes on after that:
                 # a statement of the loop body (a goto inside it is a
