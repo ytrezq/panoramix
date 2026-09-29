@@ -55,7 +55,8 @@ from panoramix.utils.helpers import (
     replace_lines,
     to_exp2,
 )
-from panoramix.utils.signatures import get_param_name
+from panoramix.utils.signatures import canonical_type, fix_input_names, get_param_name
+from panoramix.utils.supplement import fetch_sig
 
 logger = logging.getLogger(__name__)
 
@@ -379,80 +380,78 @@ def pretty_line(r, add_color=True):
         yield COLOR_GRAY + "# " + prettify(m.text, add_color=False) + ENDC
 
     elif match(r, ("log", ":params", ...)):
-        _, params, *events = r
+        _, params, *topics = r
 
-        # solidstamp and dao cover most of those cases
+        # the params of a log are its data, then its topics after the first,
+        # which is the signature of the event (unless it's anonymous)
         res_params = pretty_memory(params, add_color=False)
+        if type(res_params) == str:  # "empty()"
+            res_params = ()
+        res_params += tuple(
+            prettify(t, add_color=False, parentheses=False) for t in topics[1:]
+        )
 
-        for e in events:
-            if type(e) != int:
-                for e in events[1:]:
-                    res_params = res_params + (
-                        prettify(e, add_color=False, parentheses=False),
-                    )
-                events = [events[0]]
-                break
-                # breaks with more than one proper event
+        abi = event_abi(topics[0]) if topics else None
 
-        res_events = tuple(pretty_fname(e, add_color=False, force=True) for e in events)
-        res_events = tuple((x[:10] if x[:2] == "0x" else x) for x in res_events)
-        for e in res_events:
-            if e.count("(") != 1:
+        if not topics:
+            yield col(f"log {', '.join(res_params)}", COLOR_GRAY)
+            return
+
+        if abi is None:
+            if type(topics[0]) == int:
+                e = padded_hex(topics[0], 64)[:10]
+            else:
+                e = prettify(topics[0], add_color=False, parentheses=False)
+            yield col(
+                f"log {e}{':' if len(res_params)>0 else ''} {', '.join(res_params)}",
+                COLOR_GRAY,
+            )
+            return
+
+        inputs = fix_input_names(abi["inputs"])
+        fname = abi["name"]
+        e = "{}({})".format(
+            fname, ", ".join(f"{i['type']} {i['name']}" for i in inputs)
+        )
+
+        # the ones not indexed are in the data, the indexed ones are topics
+        in_log = [i for i in inputs if not i.get("indexed")] + [
+            i for i in inputs if i.get("indexed")
+        ]
+
+        if len(inputs) == 0 or len(res_params) == 0:
+            yield col(f"log {e}", COLOR_GRAY)
+
+        elif len(in_log) == len(res_params):
+            p_list = [(i["type"], i["name"], p) for i, p in zip(in_log, res_params)]
+            # in the order of the declaration
+            p_list = [p_list[in_log.index(i)] for i in inputs]
+
+            if len(p_list) == 1:
                 yield col(
-                    f"log {e}{':' if len(res_params)>0 else ''} {', '.join(res_params)}",
+                    f"log {fname}({p_list[0][0]} {p_list[0][1]}={p_list[0][2]})",
                     COLOR_GRAY,
                 )
             else:
-                fname, fparams = e.split("(")
+                ind = len(f"log   ")
+                first = p_list[0]
+                last = p_list[-1]
 
-                assert fparams[-1] == ")"
-                fparams = fparams[:-1]
+                def pline(p):
+                    return f"{p[0]} {p[1]}={p[2]}"
 
-                fparams = fparams.split(", ")
+                yield col(f"log {fname}(", COLOR_GRAY)  #
+                yield col(f"      {pline(first)},", COLOR_GRAY)
 
-                if fparams == [""] or len(res_params) == 0:
-                    yield col(f"log {e}", COLOR_GRAY)
+                for p in p_list[1:-1]:
+                    yield col(" " * ind + f"{pline(p)},", COLOR_GRAY)
 
-                elif len(fparams) == len(res_params):
-                    p_list = []
-                    try:
-                        for idx, ptype, pname in [
-                            f"{idx} {p}".split(" ") for idx, p in enumerate(fparams)
-                        ]:
-                            p_list.append((ptype, pname, res_params[int(idx)]))
-                    except Exception:
-                        logger.warning(f"weird log {e} {fparams}")
-                        yield (f"log {e}")
-                        return
-
-                    if len(p_list) == 1:
-                        yield col(
-                            f"log {fname}({p_list[0][0]} {p_list[0][1]}={pret(p_list[0][2], add_color=False, parentheses=False)})",
-                            COLOR_GRAY,
-                        )
-                    else:
-                        ind = len(f"log   ")
-                        first = p_list[0]
-                        last = p_list[-1]
-
-                        def pline(p):
-                            return f"{p[0]} {p[1]}={pret(p[2], add_color=False, parentheses=False)}"
-
-                        yield col(f"log {fname}(", COLOR_GRAY)  #
-                        yield col(f"      {pline(first)},", COLOR_GRAY)
-
-                        for p in p_list[1:-1]:
-                            yield col(" " * ind + f"{pline(p)},", COLOR_GRAY)
-
-                        yield col(" " * ind + f"{pline(last)})", COLOR_GRAY)
-                #                elif len(res_params) == 0:
-                #                        yield col(f'log {e}', COLOR_GRAY)
-                else:
-                    yield col(f"log {e}:", COLOR_GRAY)
-                    ind = " " * len(f"log {fname}(")
-                    for p in res_params:
-                        yield col(ind + p + ",", COLOR_GRAY)
-    #                        print(repr(len(fparams)), len(res_params))
+                yield col(" " * ind + f"{pline(last)})", COLOR_GRAY)
+        else:
+            yield col(f"log {e}:", COLOR_GRAY)
+            ind = " " * len(f"log {fname}(")
+            for p in res_params:
+                yield col(ind + p + ",", COLOR_GRAY)
 
     elif m := match(r, ("callcode", ":gas", ":addr", ":wei", ":fname", ":fparams")):
         gas, addr, wei, fname, fparams = m.gas, m.addr, m.wei, m.fname, m.fparams
@@ -1593,6 +1592,28 @@ def try_fname(exp, add_color=False):
 
     else:
         return None
+
+
+def event_abi(topic):
+    """The abi of the event whose signature is topic, if it's known."""
+    if type(topic) != int:
+        return None
+
+    abi = fetch_sig(padded_hex(topic, 64)[:10])
+    if abi is None or abi.get("type") != "event":
+        return None
+
+    # the database is by the first 4 bytes: the whole signature must match
+    from eth_hash.auto import keccak
+
+    signature = "{}({})".format(
+        abi["name"],
+        ",".join(canonical_type(i["type"], i.get("components")) for i in abi["inputs"]),
+    )
+    if keccak(signature.encode()) != topic.to_bytes(32, "big"):
+        return None
+
+    return abi
 
 
 def pretty_bytes(size, val, add_color=False, parentheses=False):
