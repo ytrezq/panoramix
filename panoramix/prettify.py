@@ -1225,6 +1225,34 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         if all_concrete(size, offset, shl, val):
             return pret(apply_mask(exp[4], exp[1], exp[2], exp[3]))
 
+        if (
+            all_concrete(size, offset, shl)
+            and offset == -shl
+            and 8 <= offset < 256
+            and 0 < size <= 256 - offset
+            and opcode(val) != "data"
+        ):
+            # val >> offset, with the bits above size cut off if there are any
+            # e.g. Mask(16, 160, x) >> 160 --> uint16(x >> 160)
+            # (always within parentheses or a cast: >> binds less tightly than
+            # * and /, which are printed without parentheses)
+            op_form = COLOR_BOLD + " >> " + ENDC if add_color else " >> "
+            shifted = (
+                prettify(val, parentheses=True, add_color=add_color)
+                + op_form
+                + pret(offset)
+            )
+
+            if size + offset == 256:
+                return "(" + shifted + ")"
+
+            type_name = mask_to_type(size)
+            if type_name is None and size % 8 == 0:
+                type_name = f"uint{size}"
+
+            if type_name is not None:
+                return col(type_name + "(", COLOR_GRAY) + shifted + col(")", COLOR_GRAY)
+
         if shl == 0:
             exp = ("mask", size, offset, val)
 
