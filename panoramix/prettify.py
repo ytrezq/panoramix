@@ -909,10 +909,7 @@ def pretty_num(exp, add_color):
                 return f"{exp // (10**count)} * 10^{count}"
 
     if type(exp) == int:
-        if try_fname(exp, add_color) != None:
-            return try_fname(exp, add_color)
-
-        elif (
+        if (
             type(exp) == int and (exp & 2**256 - 1) < 8**30
         ):  # if it's larger than 30 bytes, it's probably
             # an address, not a negative number
