@@ -309,10 +309,6 @@ class Contract:
             elif exp == ("mask_shl", 32, 224, 0, ("cd", 0)):
                 return ("cd", 0)
 
-            elif m := match(exp, ("mask_shl", 160, 0, 96, ":val")):
-                # nasty hack for stuff like 0xF8DFaC6CAe56736FD2a05e45108490C6Cb40147D approve
-                return ("mask_shl", 160, 0, 0, m.val)
-
             else:
                 return exp
 
