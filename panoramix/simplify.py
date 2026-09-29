@@ -275,28 +275,6 @@ def simplify_exp(exp):
     if opcode(exp) == "data" and all(t == 0 for t in exp[1:]):
         return 0
 
-    if (
-        (
-            m := match(
-                exp,
-                ("mask_shl", ":int:size", ":int:off", ":int:moff", ("cd", ":int:num")),
-            )
-        )
-        and m.moff == -m.off
-        and m.size in (8, 16, 32, 64, 128)
-        and m.off > 0
-        # the high bits only: the lower ones may be other fields packed
-        # in the same word, e.g. (x >> 160) & 0xffff isn't uint16(x)
-        and m.off + m.size == 256
-    ):
-        return (
-            "mask_shl",
-            m.size,
-            0,
-            0,
-            ("cd", m.num),
-        )  # calldata params are left-padded usually, it seems
-
     if m := match(exp, ("iszero", ("iszero", ":e"))):
         exp = ("bool", m.e)
 
