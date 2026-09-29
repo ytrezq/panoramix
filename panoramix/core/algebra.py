@@ -1088,31 +1088,26 @@ def try_add(self, other):
 
 
 def __try_add(self, other):
+    return _try_add(_unshift(self), _unshift(other))
+
+
+def _unshift(term):
+    """
+    num * Mask(size, off, shl, val) is num * 2**shl * Mask(size, off, 0, val),
+    and when no bit of the mask stays under 256 - shl, the mask can take all
+    the bits from off: e.g. 8 * x is Mask(253, 0, 3, x), which becomes
+    8 * Mask(256, 0, 0, x), and adds up with x.
+    """
     if (
         m := match(
-            self,
+            term,
             ("mul", ":num", ("mask_shl", ":int:size", ":int:off", ":int:shl", ":val")),
         )
     ) and m.shl > 0:
-        self = (
-            "mul",
-            m.num + _pow2(m.shl),
-            ("mask_shl", m.size + m.shl, m.off, 0, m.val),
-        )
+        size = m.size + m.shl if m.off + m.size + m.shl >= 256 else m.size
+        return ("mul", m.num * _pow2(m.shl), ("mask_shl", size, m.off, 0, m.val))
 
-    if (
-        m := match(
-            other,
-            ("mul", ":num", ("mask_shl", ":int:size", ":int:off", ":int:shl", ":val")),
-        )
-    ) and m.shl > 0:
-        other = (
-            "mul",
-            m.num + _pow2(m.shl),
-            ("mask_shl", m.size + m.shl, m.off, 0, m.val),
-        )
-
-    return _try_add(self, other)
+    return term
 
 
 def _try_add(self, other):
@@ -1134,8 +1129,8 @@ def _try_add(self, other):
         )
         and mo.other_size == 256 - mo.shl
     ):
-        mo.mul *= _pow2(mo.shl) - 1
-        return mul_op(mo.mul, ms.val)
+        # mul * 2**shl * val - val
+        return mul_op(mo.mul * _pow2(mo.shl) - 1, ms.val)
 
     #    if self, other == mul(x, exp), mul(y, exp)
     #                   => mul(x+y, exp)
@@ -1246,7 +1241,8 @@ def _try_add(self, other):
         and (mo := match(exp2, ("mask_shl", ":int:size2", 0, 0, ms.x)))
         and mo.size2 < ms.size1
     ):
-        return ("mul", num1, ("mask_shl", ms.size1 - mo.size2, 0, 0, ms.x))
+        # the bits [size2, size1) of x
+        return ("mul", num1, ("mask_shl", ms.size1 - mo.size2, mo.size2, 0, ms.x))
 
     return None
 
