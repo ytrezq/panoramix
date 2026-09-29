@@ -172,33 +172,57 @@ class Function(EasyCopy):
 
             occurences = find_f_list(self.trace, f)
 
-            sizes = {}
+            # the params (by their position in the calldata) and the sizes of
+            # the masks applied to them, None when used as they are
+            uses = {}
+            pointers = set()
             for o in occurences:
-                if m := match(o, ("mask_shl", ":size", Any, Any, ("cd", ":idx"))):
-                    size, idx = m.size, m.idx
-
-                if m := match(o, ("cd", ":idx")):
+                if m := match(o, ("mask_shl", ":size", ":off", Any, ("cd", ":idx"))):
                     idx = m.idx
-                    size = 256
+                    # only the lowest bits tell a type: taking a byte out of
+                    # the middle doesn't make a param an uint8
+                    size = m.size if m.off == 0 else None
+
+                elif m := match(o, ("cd", ":idx")):
+                    idx = m.idx
+                    size = None
+
+                if type(idx) is not int:
+                    # an element of an array, or its length: what it's read
+                    # relatively to is a pointer to it
+                    pointers.update(
+                        find_f_list(
+                            idx, lambda e: [e[1]] if match(e, ("cd", int)) else []
+                        )
+                    )
+                    continue
 
                 if idx == 0:
                     continue
 
-                if m := match(idx, ("add", 4, ("cd", ":in_idx"))):
-                    # this is a mark of 'cd' being used as a pointer
-                    sizes[m.in_idx] = -1
-                    continue
+                uses.setdefault(idx, []).append(size)
 
-                if idx not in sizes:
-                    sizes[idx] = size
-
-                elif size < sizes[idx]:
-                    sizes[idx] == size
-
-            for idx in sizes:
-                if type(idx) != int or (idx - 4) % 32 != 0:
+            for idx in uses:
+                if (idx - 4) % 32 != 0:
                     logger.warning("unusual cd (not aligned)")
                     return {}
+
+            sizes = {}
+            for idx, idx_sizes in uses.items():
+                if idx in pointers:
+                    sizes[idx] = -1
+                elif valid := self.validation(idx):
+                    sizes[idx] = valid
+                elif None not in idx_sizes:
+                    # masked everywhere, as the compilers did before
+                    # validating the params
+                    sizes[idx] = min(idx_sizes)
+                else:
+                    sizes[idx] = 256
+
+            for idx in pointers - set(sizes):
+                if type(idx) is int and idx > 0 and (idx - 4) % 32 == 0:
+                    sizes[idx] = -1
 
             # for every idx check if it's a bool by any chance
             for idx in sizes:
@@ -225,7 +249,9 @@ class Function(EasyCopy):
             for idx in sorted(sizes.keys()):
                 size = sizes[idx]
 
-                if size == -2:
+                if type(size) is str:
+                    kind = size
+                elif size == -2:
                     kind = "tuple"
                 elif size == -1:
                     kind = "array"
@@ -240,6 +266,33 @@ class Function(EasyCopy):
                 count += 1
 
         return res
+
+    def validation(self, idx):
+        """
+        The type of the param at idx, if the function checks that its value is
+        a valid one - as solc does since 0.8, reverting if it's not.
+        """
+        cd = ("cd", idx)
+
+        def f(exp):
+            if (m := match(exp, ("eq", ":a", ":b"))) and cd in (m.a, m.b):
+                other = m.b if m.a == cd else m.a
+                if m := match(other, ("mask_shl", ":int:size", ":int:off", 0, cd)):
+                    if m.off == 0 and m.size % 8 == 0 and 0 < m.size <= 256:
+                        return [mask_to_type(m.size) or f"uint{m.size}"]
+                    if m.off + m.size == 256 and m.size % 8 == 0:
+                        return [f"bytes{m.size // 8}"]
+                if match(other, ("bool", cd)):
+                    return ["bool"]
+                if m := match(other, ("signextend", ":int:b", cd)):
+                    return [f"int{8 * (m.b + 1)}"]
+            return []
+
+        found = set(find_f_list(self.trace, f))
+        if len(found) == 1:
+            return found.pop()
+
+        return None
 
     def serialize(self):
         trace = self.trace
