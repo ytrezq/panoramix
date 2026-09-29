@@ -1521,6 +1521,11 @@ def _mem_use(trace, mem_idx):
             if exp_uses_mem(memval, mem_idx):
                 return USED
 
+            if any(overwrites_mem(line, inner[1]) for inner in find_mems(mem_idx)):
+                # where mem_idx is depends on the memory the line writes:
+                # it isn't the same memory afterwards
+                return USED
+
             split = memloc_overwrite(
                 mem_idx, memloc
             )  # returns range that we're confident wasn't overwritten by memloc
@@ -1737,10 +1742,13 @@ def replace_mem(trace, mem_idx, mem_val):
 
     for idx, line in enumerate(trace):
         if m := match(line, ("setmem", ":memloc", Any)):
-            memloc = simplify_exp(m.memloc)
-            # replace in val
-            res.append(replace_mem_exp(line, mem_idx, mem_val))
-            if range_overlaps(memloc, mem_idx):
+            # replace in val, and in where it's written - that is known
+            # before the line changes the memory
+            line = replace_mem_exp(line, mem_idx, mem_val)
+            res.append(line)
+            memloc = simplify_exp(line[1])
+            # (None: it may overlap)
+            if range_overlaps(memloc, mem_idx) is not False:
                 split = splits_mem(mem_idx, memloc, mem_val)
                 res2 = trace[idx + 1 :]
                 for s in split:
@@ -1748,7 +1756,9 @@ def replace_mem(trace, mem_idx, mem_val):
 
                 res.extend(res2)
                 return res
-            if affects(line, mem_val):
+            if affects(line, mem_val) or affects(line, mem_id):
+                # (mem_id: where mem_idx is may depend on the memory the
+                # line writes)
                 res.extend(copy(trace[idx + 1 :]))
                 return res
 
