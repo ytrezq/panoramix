@@ -2143,7 +2143,7 @@ def while_max_memidx(line):
 
     collected = 0
 
-    if "endvars" not in a:
+    if "lastvars" not in a:
         for s in setmems:
             collected = _max_op(collected, memloc_right(s))
 
@@ -2153,7 +2153,7 @@ def while_max_memidx(line):
 
     for v in a["setvars"]:
         v_idx, v_start = v[1], v[2]
-        v_end = a["endvars"][v_idx]
+        v_end = a["lastvars"][v_idx]
 
         setmems_begin = replace_var(setmems_begin, v_idx, v_start)
         setmems_end = replace_var(setmems_end, v_idx, v_end)
@@ -2264,7 +2264,7 @@ def while_touches_mem(line, mem_idx):
 
     setmems_begin = setmems_end = setmems
 
-    if "endvars" not in a:
+    if "lastvars" not in a:
         for (
             s
         ) in (
@@ -2277,7 +2277,7 @@ def while_touches_mem(line, mem_idx):
 
     for v in a["setvars"]:
         v_idx, v_start = v[1], v[2]
-        v_end = a["endvars"][v_idx]
+        v_end = a["lastvars"][v_idx]
 
         setmems_begin = replace_var(setmems_begin, v_idx, v_start)
         setmems_end = replace_var(setmems_end, v_idx, v_end)
@@ -2314,7 +2314,7 @@ def while_uses_mem(line, mem_idx):
 
     mems_begin = mems_end = mems
 
-    if "endvars" not in a:
+    if "lastvars" not in a:
         for s in mems:
             if range_overlaps(mem_idx, s[1]) is not False:
                 return True
@@ -2323,7 +2323,7 @@ def while_uses_mem(line, mem_idx):
 
     for v in a["setvars"]:
         v_idx, v_start = v[1], v[2]
-        v_end = a["endvars"][v_idx]
+        v_end = a["lastvars"][v_idx]
 
         mems_begin = replace_var(mems_begin, v_idx, v_start)
         mems_end = replace_var(mems_end, v_idx, v_end)
@@ -2356,6 +2356,41 @@ def exp_uses_mem(exp, mem_idx):
             return True
 
     return False
+
+
+# what can have a different value in every iteration of a loop: its
+# variables, and what reads the state
+LOOP_VARIANT = (
+    "var",
+    "storage",
+    "tload",
+    "mem",
+    "msize",
+    "gas",
+    "balance",
+    "extcodesize",
+    "extcodehash",
+    "returndatasize",
+    "ext_call",
+    "return_data",
+    "return_code",
+    "new_address",
+    ".result",
+)
+
+
+def is_loop_invariant(exp):
+    """True if exp is sure to have the same value in every iteration of a loop."""
+    if type(exp) is int:
+        return True
+
+    if type(exp) is str:
+        return not any(name in exp for name in LOOP_VARIANT)
+
+    if type(exp) is not tuple:
+        return False
+
+    return all(is_loop_invariant(e) for e in exp)
 
 
 def parse_counters(line):
@@ -2433,21 +2468,45 @@ def parse_counters(line):
 
     a["num_loops"] = num_loops
 
-    a["endvars"] = {}
+    lastvars = {}
     for v in setvars:
         var_idx, var_val = v[1], to_real_int(v[2])
         step = stepvars.get(var_idx)
         if not (
-            match(step, ("add", ":diff", ("var", var_idx)))
-            or match(step, ("add", ":diff", ("mul", 1, ("var", var_idx))))
+            (
+                match(step, ("add", ":diff", ("var", var_idx)))
+                or match(step, ("add", ":diff", ("mul", 1, ("var", var_idx))))
+            )
+            and is_loop_invariant(step[1])
         ):
-            # not a var that gets incremented on every iteration (e.g. one
-            # that is set in a branch), we can't tell its value after the loop
-            del a["endvars"]
+            # not a var that gets incremented by the same amount on every
+            # iteration (e.g. one that is set in a branch, or `s += i * i`),
+            # we can't tell its value after the loop
             return a
         var_diff = to_real_int(step[1])
         assert type(num_loops) != list
         var_stop = add_op(var_val, mul_op(var_diff, num_loops))
-        a["endvars"][var_idx] = var_stop
+        lastvars[var_idx] = var_stop
+
+    # the values after the last iteration if there is one, which is enough
+    # to tell what memory the loop touches
+    a["lastvars"] = lastvars
+
+    # num_loops is the number of iterations only if the counter doesn't start
+    # beyond where it stops - otherwise there are none, and it's negative
+    if cond[0] == "le" and counter_step > 0:
+        starts_before_stop = safe_le_op(
+            counter_start, add_op(counter_stop, counter_step)
+        )
+    elif cond[0] == "ge" and counter_step < 0:
+        starts_before_stop = safe_le_op(
+            add_op(counter_stop, counter_step), counter_start
+        )
+    else:
+        starts_before_stop = False
+
+    if starts_before_stop is True:
+        # the values after the loop
+        a["endvars"] = lastvars
 
     return a
