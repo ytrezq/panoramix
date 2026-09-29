@@ -43,6 +43,24 @@ def fold_stacks(self, latter, depth):
     return first, vars
 
 
+def stack_vars(first, positions, depth):
+    """
+    Like fold_stacks, with the positions of the loop variables given: the stack
+    from the beginning of the loop with variables in those positions, and the
+    variables.
+    """
+    first = list(first)
+    vars = []
+
+    for idx in sorted(positions, reverse=True):
+        temp_var_counter = len(first) - idx + depth * 1000
+
+        vars.append(("var", temp_var_counter, first[idx], idx))
+        first[idx] = ("var", temp_var_counter)
+
+    return first, vars
+
+
 class Stack(EasyCopy):
     def __init__(self, val=None):
         # a copy: the VM works on the stack in place, and the node it's

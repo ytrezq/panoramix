@@ -31,7 +31,7 @@ from panoramix.utils.helpers import (
     precompiled_var_names,
 )
 
-from .stack import Stack, fold_stacks
+from .stack import Stack, fold_stacks, stack_vars
 
 logger = logging.getLogger(__name__)
 
@@ -489,6 +489,30 @@ class VM(EasyCopy):
                     node.trace = None
                     node.set_label(loop_dest, tuple(var_list), folded)
                     continue
+
+                var_positions = set(stack_pos for *_, stack_pos in beginvars)
+                changed = set(
+                    idx
+                    for idx, (before, after) in enumerate(zip(old_stack, stack))
+                    if idx not in var_positions and before != after
+                )
+
+                if changed:
+                    # The loop variables were found by comparing the stack
+                    # before and after the first iteration, and this one
+                    # changes something else: e.g. `s += i * i` leaves s at 0
+                    # the first time, `if (x[i] > m) m = x[i]` may not change m.
+                    # The loop gets explored again, with a variable there too.
+                    first = loop_dest.label
+                    folded, var_list = stack_vars(
+                        first.stack, var_positions | changed, loop_dest.depth
+                    )
+                    loop_dest.trace = None
+                    loop_dest.next = []
+                    loop_dest.set_label(first, tuple(var_list), folded)
+                    # the other loops found in this pass may be in the part
+                    # of the tree that was just thrown away
+                    return
 
                 node.trace = [("goto", loop_dest, tuple(set_vars))]
 
