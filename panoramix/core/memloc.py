@@ -19,6 +19,7 @@ from panoramix.core.algebra import (
     apply_mask_to_storage,
     bits,
     calc_max,
+    divisible_bytes,
     flatten_adds,
     ge_zero,
     get_sign,
@@ -313,6 +314,9 @@ def split_setmem(line):
 
     res = []
     for size, offset, split_val in post_split:
+        if not (divisible_bytes(size) and divisible_bytes(offset)):
+            # parts of bytes: memory is written byte by byte
+            return [line]
         try:
             split_idx = apply_mask_to_range(mem_idx, size, offset)
         except Exception:
