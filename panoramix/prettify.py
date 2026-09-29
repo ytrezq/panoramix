@@ -738,6 +738,12 @@ def pretty_line(r, add_color=True):
 
         yield "{} = {}".format(stor_addr, stor_val)
 
+    elif m := match(r, ("tstore", ":key", ":val")):
+        yield "{} = {}".format(
+            prettify(("tload", m.key), add_color=add_color),
+            prettify(m.val, add_color=add_color, parentheses=False),
+        )
+
     elif type(r) == list and len(r) > 1:
         yield "{} {}".format(
             r[0],
@@ -997,6 +1003,15 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
 
     if exp == "basefee":
         return "block.basefee"
+
+    if exp == "blobbasefee":
+        return "block.blobbasefee"
+
+    if m := match(exp, ("blobhash", ":idx")):
+        return f"blobhash({pret(m.idx)})"
+
+    if m := match(exp, ("tload", ":key")):
+        return col("transient[", COLOR_GRAY) + pret(m.key) + col("]", COLOR_GRAY)
 
     if exp == "gasprice":
         return "block.gasprice"

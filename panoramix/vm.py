@@ -976,6 +976,8 @@ class VM(EasyCopy):
 
         if op == "sstore":
             self.known = forget(self.known, ("storage",))
+        elif op == "tstore":
+            self.known = forget(self.known, ("tload",))
         elif op in STATE_CHANGING_OPS:
             # Anything can happen in the callee, including reentering this
             # contract and changing its storage.
@@ -1177,6 +1179,14 @@ class VM(EasyCopy):
             val = stack.pop()
             trace(("store", 256, 0, sloc, val))
 
+        elif op == "tload":
+            stack.append(("tload", stack.pop()))
+
+        elif op == "tstore":
+            key = stack.pop()
+            val = stack.pop()
+            trace(("tstore", key, val))
+
         elif op == "mload":
             memloc = stack.pop()
 
@@ -1208,6 +1218,14 @@ class VM(EasyCopy):
                     mask_op(val, 8),
                 )
             )
+
+        elif op == "mcopy":
+            dst = stack.pop()
+            src = stack.pop()
+            size = stack.pop()
+
+            if size != 0:
+                trace(("setmem", ("range", dst, size), ("mem", ("range", src, size))))
 
         elif op == "extcodecopy":
             addr = stack.pop()
@@ -1398,7 +1416,7 @@ class VM(EasyCopy):
             trace(("setvar", vname, "msize"))
             stack.append(("var", vname))
 
-        elif op in ("extcodesize", "extcodehash", "blockhash"):
+        elif op in ("extcodesize", "extcodehash", "blockhash", "blobhash"):
             stack.append(
                 (
                     op,
@@ -1422,6 +1440,7 @@ class VM(EasyCopy):
             "calldatasize",
             "returndatasize",
             "basefee",
+            "blobbasefee",
         ]:
             stack.append(op)
 

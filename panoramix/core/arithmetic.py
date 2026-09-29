@@ -61,6 +61,7 @@ VOLATILE = (
     "extcodehash",
     "mem",
     "msize",
+    "tload",
 )
 
 

@@ -74,6 +74,8 @@ opcode_dict = {
     0x46: "chainid",
     0x47: "selfbalance",
     0x48: "basefee",
+    0x49: "blobhash",
+    0x4A: "blobbasefee",
     #
     # Stack, Memory, Storage and Flow Operations
     #
@@ -89,6 +91,9 @@ opcode_dict = {
     0x59: "msize",
     0x5A: "gas",
     0x5B: "jumpdest",
+    0x5C: "tload",
+    0x5D: "tstore",
+    0x5E: "mcopy",
     #
     # Push Operations
     #
@@ -230,6 +235,11 @@ stack_diffs = {
     "address": 1,
     "selfbalance": 1,
     "basefee": 1,
+    "blobhash": 0,
+    "blobbasefee": 1,
+    "tload": 0,
+    "tstore": -2,
+    "mcopy": -3,
     "chainid": 1,
     "call": -6,
     "callcode": -6,
