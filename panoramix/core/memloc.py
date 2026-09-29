@@ -120,7 +120,7 @@ def split_or(value):
         if m := match(row, ("mul", 1, ":val")):
             row = m.val
 
-        if opcode(row) == "mask_shl" and all_concrete(row):
+        if opcode(row) == "mask_shl" and all_concrete(*row[1:]):
             row = apply_mask(row[4], row[1], row[2], row[3])
 
         if type(row) in [int, float]:
