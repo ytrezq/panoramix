@@ -255,9 +255,14 @@ def pprint_logic(exp, indent=2):
                 pretty_line(("setvar", v[1], v[2]), add_color=True)
             )[0]
 
-        yield " " * indent + COLOR_GREEN + "while " + ENDC + prettify(
-            cond, add_color=True, parentheses=False, rem_bool=True
-        ) + COLOR_GREEN + ":" + ENDC  # +COLOR_GREEN+':  # '+str(jd)+ENDC
+        if cond in (1, ("bool", 1)):
+            cond_text = "True"
+        else:
+            cond_text = prettify(cond, add_color=True, parentheses=False, rem_bool=True)
+        while_line = (
+            COLOR_GREEN + "while " + ENDC + cond_text + COLOR_GREEN + ":" + ENDC
+        )
+        yield " " * indent + while_line
         if type(path) != list:
             path = path.trace
 
