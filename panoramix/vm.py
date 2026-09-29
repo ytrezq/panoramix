@@ -924,7 +924,11 @@ class VM(EasyCopy):
             p = stack.pop()
             n = stack.pop()
 
-            if n == 0:
+            if n == 0 and op == "return":
+                # returning nothing is the same as stopping, while
+                # ("return", 0) returns a word, 0
+                trace.append(("stop",))
+            elif n == 0:
                 trace.append((op, 0))
             else:
                 return_data = mem_load(p, n)
