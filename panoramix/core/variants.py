@@ -97,7 +97,7 @@ def possibilities(var):
                 yield p
 
                 if current == ("mem", ("range", 64, 32)):
-                    yield {current: 96}
+                    p[current] = 96
                 elif current == "calldatasize":
                     p[current] = 6
                 else:
@@ -105,18 +105,14 @@ def possibilities(var):
                 yield p
 
 
-def replace(exp, idx, val):
-    if exp == idx:
-        return val
+def replace_dict(exp, dic):
+    # All the variables at once: one can contain another (mem[_1] and _1),
+    # replacing them one after the other would depend on their order.
+    for idx, val in dic.items():
+        if exp == idx:
+            return val
 
     if type(exp) != tuple:
         return exp
 
-    return tuple(replace(e, idx, val) for e in exp)
-
-
-def replace_dict(exp, dic):
-    for idx, val in dic.items():
-        exp = replace(exp, idx, val)
-
-    return exp
+    return tuple(replace_dict(e, dic) for e in exp)
