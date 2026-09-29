@@ -925,9 +925,77 @@ def pretty_num(exp, add_color):
     return str(exp)
 
 
+"""
+
+    Precedence of the operators as printed, the higher binding tighter, as
+    in Python: an operand is in parentheses if its operator binds less
+    tightly than it needs to. `parentheses` is how tightly an expression
+    needs to bind where it's printed: an int, False for nothing (a whole
+    line, a subscript, an argument), True for anything but an atom.
+
+"""
+
+OR, AND, NOT, CMP, SHIFT, ADD, MUL, UNARY, POW, ATOM = range(1, 11)
+
+OPERATOR_PRECEDENCE = {
+    " or ": OR,
+    " xor ": OR,
+    " and ": AND,
+    " == ": CMP,
+    " != ": CMP,
+    " < ": CMP,
+    " > ": CMP,
+    " <= ": CMP,
+    " >= ": CMP,
+    " <′ ": CMP,
+    " >′ ": CMP,
+    " <=′ ": CMP,
+    " >=′ ": CMP,
+    " << ": SHIFT,
+    " >> ": SHIFT,
+    " + ": ADD,
+    " - ": ADD,
+    " +′ ": ADD,
+    " * ": MUL,
+    " / ": MUL,
+    " % ": MUL,
+    " *′ ": MUL,
+    " /′ ": MUL,
+    " %′ ": MUL,
+    "^": POW,
+}
+
+
+def context(parentheses, top_level=False):
+    if top_level or parentheses is False or parentheses is None:
+        return 0
+    if parentheses is True:
+        return ATOM
+    return parentheses
+
+
+def num_precedence(text):
+    """The precedence of a number as pretty_num prints it."""
+    if " * " in text:
+        return MUL
+    if text.startswith("-"):
+        return UNARY
+    if "^" in text:
+        return POW
+    return ATOM
+
+
 def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=False):
     col = partial(colorize, add_color=add_color)
     pret = partial(prettify, add_color=add_color, parentheses=False)
+    ctx = context(parentheses, top_level)
+
+    def wrap(text, prec):
+        return f"({text})" if prec < ctx else text
+
+    def operand(e, prec, **kw):
+        # e, printed as needing to bind at least as tightly as prec
+        return prettify(e, parentheses=prec, add_color=add_color, **kw)
 
     if rem_bool:
         exp = simplify_bool(exp)
@@ -952,7 +1020,8 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         # also, not tackling single minutes because too often they are not time related
 
     if type(exp) in (int, float):
-        return pretty_num(exp, add_color)
+        text = pretty_num(exp, add_color)
+        return wrap(text, num_precedence(text))
 
     if opcode(exp) in precompiled.values():
         return f"{exp[0]}({pret(exp[1])})"
@@ -972,7 +1041,7 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         return ", ".join(pretty_memory(exp, add_color=add_color))
 
     if m := match(exp, ("bytes", ":size", ":val")):
-        return pretty_bytes(m.size, m.val, add_color)
+        return pretty_bytes(m.size, m.val, add_color, parentheses=ctx)
 
     if m := match(exp, ("signextend", ":int:b", ":val")):
         return (
@@ -1143,7 +1212,7 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         parsed_exp = get_param_name(exp, add_color=add_color)
 
         if type(parsed_exp) != str:
-            return "cd[" + prettify(parsed_exp[1], add_color=add_color) + "]"
+            return "cd[" + pret(parsed_exp[1]) + "]"
         else:
             return parsed_exp
 
@@ -1214,9 +1283,9 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
             # for offsets smaller than 8
 
             if exp[3] <= 8:
-                return pret(("div", exp[4], 2 ** -exp[3]), parentheses=parentheses)
+                return pret(("div", exp[4], 2 ** -exp[3]), parentheses=ctx)
             else:
-                return pret(("shr", exp[3], exp[4]), parentheses=parentheses)
+                return pret(("shr", exp[3], exp[4]), parentheses=ctx)
 
         if (
             (type(exp[1]), type(exp[2]), type(exp[3])) == (int, int, int)
@@ -1233,9 +1302,9 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
                 val = ("mask", size + offset, 0, val)  # 0 because exp2 == exp3
 
             if exp[3] == 0:
-                return pret(val, parentheses=parentheses)
+                return pret(val, parentheses=ctx)
             elif exp[3] <= 8 and exp[3] >= -8:
-                return pret(("mul", val, 2 ** exp[3]), parentheses=parentheses)
+                return pret(("mul", val, 2 ** exp[3]), parentheses=ctx)
             elif exp[3] > 0:
                 return pret(
                     (
@@ -1243,7 +1312,7 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
                         exp[3],
                         val,
                     ),
-                    parentheses=parentheses,
+                    parentheses=ctx,
                 )
             else:
                 return pret(
@@ -1252,7 +1321,7 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
                         -exp[3],
                         val,
                     ),
-                    parentheses=parentheses,
+                    parentheses=ctx,
                 )
 
         if all_concrete(size, offset, shl, val):
@@ -1267,17 +1336,11 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         ):
             # val >> offset, with the bits above size cut off if there are any
             # e.g. Mask(16, 160, x) >> 160 --> uint16(x >> 160)
-            # (always within parentheses or a cast: >> binds less tightly than
-            # * and /, which are printed without parentheses)
             op_form = COLOR_BOLD + " >> " + ENDC if add_color else " >> "
-            shifted = (
-                prettify(val, parentheses=True, add_color=add_color)
-                + op_form
-                + pret(offset)
-            )
+            shifted = operand(val, SHIFT) + op_form + pret(offset)
 
             if size + offset == 256:
-                return "(" + shifted + ")"
+                return wrap(shifted, SHIFT)
 
             type_name = mask_to_type(size)
             if type_name is None and size % 8 == 0:
@@ -1313,7 +1376,7 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         size, val = m.size, m.val
 
         if size == 256:
-            return pret(val)
+            return pret(val, parentheses=ctx)
 
         if type(size) == int:
             if size == 255:
@@ -1328,14 +1391,14 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
 
     if m := match(exp, ("bool", ":val")):
         if opcode(m.val) in ("lt", "gt", "iszero", "le", "ge", "bool"):
-            return pret(m.val, parentheses=parentheses)
+            return pret(m.val, parentheses=ctx)
         else:
             return "bool(" + pret(m.val) + ")"
 
     if m := match(exp, ("mask", ":size", ":offset", ":val")):
         size, offset, val = m.size, m.offset, m.val
         if type(size) == int and offset == 0 and size < 64:
-            return pret(("mod", val, 2**size), parentheses=parentheses)
+            return pret(("mod", val, 2**size), parentheses=ctx)
         else:
             return "Mask({}, {}, {})".format(pret(size), pret(offset), pret(val))
 
@@ -1343,24 +1406,17 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         m.op == "sar" or (m.op == "shr" and not isinstance(m.off, int))
     ):
         # the shifts that the vm leaves as they are: the arithmetic ones (>>′,
-        # like the other signed operations), and the ones by a symbolic amount;
-        # in parentheses, since * and / are printed without
+        # like the other signed operations), and the ones by a symbolic amount
         op_form = " >>′ " if m.op == "sar" else " >> "
         if add_color:
             op_form = COLOR_BOLD + op_form + ENDC
-        return (
-            "("
-            + prettify(m.val, parentheses=True, add_color=add_color)
-            + op_form
-            + prettify(m.off, parentheses=True, add_color=add_color)
-            + ")"
-        )
+        return wrap(operand(m.val, SHIFT) + op_form + operand(m.off, SHIFT + 1), SHIFT)
 
     #    if opcode(exp) in ('byte', 'bytes8', 'uint16', 'bytes4', 'addr', 'int256'):
     #        return prettify('{}({})'.format(opcode(exp).lower(), prettify(exp[1], add_color=add_color)), add_color=add_color)
 
     opcode_to_arithm = {
-        "sub": " - ",  # todo - parentheses?
+        "sub": " - ",
         "div": " / ",
         "mul": " * ",
         "gt": " > ",
@@ -1389,44 +1445,35 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         if opcode(exp) != "add":
             return prettify(exp, add_color=add_color)
 
-        if type(exp[1]) == float:
+        if type(exp[1]) in (int, float):
             real = exp[1]
-            if int(real) == real:
+            if type(real) == float and int(real) == real:
                 real = int(real)  # 32.0 -> 32
-
-            symbolic = exp[2:]
-            res = " + ".join([prettify(x, add_color=add_color) for x in symbolic])
-            if real > 0:
-                res += " + " + prettify(real)
-            elif real < 0:
-                res += " - " + prettify(-real)
-
-        elif type(exp[1]) == int:
-            real = to_real_int(exp[1])
-            symbolic = exp[2:]
-            res = " + ".join([prettify(x, add_color=add_color) for x in symbolic])
-            if real > 0:
-                res += " + " + prettify(real)
-            elif real < 0:
-                res += " - " + prettify(-real)
-
+            if type(real) == int:
+                real = to_real_int(real)
+            terms = exp[2:]
         else:
-            res = ""
-            for x in exp[1:]:
-                if res == "":
-                    res = prettify(x, add_color=add_color)
-                elif opcode(x) == "mul" and type(x[1]) == int and x[1] < 0:
-                    res += " - " + prettify(minus_op(x), add_color=add_color)
-                else:
-                    res += " + " + prettify(x, add_color=add_color)
+            real = 0
+            terms = exp[1:]
 
-        if parentheses:
-            return f"({res})"
-        else:
-            return res
+        res = ""
+        for x in terms:
+            if res == "":
+                res = operand(x, ADD)
+            elif opcode(x) == "mul" and type(x[1]) == int and x[1] < 0:
+                res += " - " + operand(minus_op(x), ADD + 1)
+            else:
+                res += " + " + operand(x, ADD)
+
+        if real > 0:
+            res += " + " + operand(real, ADD)
+        elif real < 0:
+            res += " - " + operand(-real, ADD + 1)
+
+        return wrap(res, ADD)
 
     if opcode(exp) == "not":
-        return COLOR_BOLD + "!" + ENDC + prettify(exp[1], add_color=add_color)
+        return wrap(COLOR_BOLD + "!" + ENDC + operand(exp[1], UNARY), UNARY)
 
     if opcode(exp) == "add":
         return pretty_adds(exp)
@@ -1440,29 +1487,35 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         exp = ("shl", to_exp2(exp[1]), exp[2])
 
     if m := match(exp, ("mul", -1, ":val")):
-        return "-" + pret(m.val, parentheses=parentheses)
+        return wrap("-" + operand(m.val, UNARY), UNARY)
 
     if m := match(exp, ("mul", 1, ":val")):
-        return pret(m.val, parentheses=parentheses)
+        return pret(m.val, parentheses=ctx)
 
     if m := match(exp, ("mul", 1, ...)):
-        return pret(("mul",) + exp[2:], parentheses=parentheses)
+        return pret(("mul",) + exp[2:], parentheses=ctx)
 
     if m := match(exp, ("div", ":num", 1)):
-        return pret(m.num, parentheses=parentheses)
+        return pret(m.num, parentheses=ctx)
 
     if m := match(exp, ("exp", ":a", ":n")):
-        return pret(m.a, parentheses=True) + "^" + pret(m.n, parentheses=True)
+        return wrap(operand(m.a, POW + 1) + "^" + operand(m.n, POW), POW)
 
     if opcode(exp) in opcode_to_arithm:
         if opcode(exp) in ["shl", "shr"]:
             exp = exp[0], exp[2], exp[1]
 
-        form = "{}"
-        if parentheses and not top_level:
-            form = "({})"
-
         op_form = opcode_to_arithm[opcode(exp)]
+        prec = OPERATOR_PRECEDENCE[op_form]
+        # the operands after the first bind tighter: a / (b / c) isn't
+        # a / b / c, a * (b / c) isn't a * b / c
+        rest_prec = prec + 1
+        if prec == CMP:
+            # comparisons don't chain
+            first_prec = CMP + 1
+        else:
+            first_prec = prec
+
         if add_color:
             op_form = COLOR_BOLD + op_form + ENDC
 
@@ -1481,26 +1534,33 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
 
         if opcode(exp) == "and":
             exp = fold_ands(exp)
-            return form.format(op_form.join(pret(e, rem_bool=True) for e in exp[1:]))
+            parts = [operand(e, rest_prec, rem_bool=True) for e in exp[1:]]
         else:
-            return form.format(op_form.join(pret(e) for e in exp[1:]))
+            parts = [operand(exp[1], first_prec)] + [
+                operand(e, rest_prec) for e in exp[2:]
+            ]
+
+        return wrap(op_form.join(parts), prec)
 
     if m := match(exp, ("iszero", ":val")):
         val = m.val
 
+        def comparison(left, op, right):
+            return wrap(operand(left, CMP + 1) + op + operand(right, CMP + 1), CMP)
+
         if m := match(val, ("gt", ":left", ":right")):
-            return pret(m.left) + " <= " + pret(m.right)
+            return comparison(m.left, " <= ", m.right)
 
         if m := match(val, ("lt", ":left", ":right")):
-            return pret(m.left) + " >= " + pret(m.right)
+            return comparison(m.left, " >= ", m.right)
 
         if m := match(val, ("eq", ":left", ":right")):
             if type(m.left) in (str, int):
-                return pret(m.right) + " != " + pret(m.left)
+                return comparison(m.right, " != ", m.left)
             else:
-                return pret(m.left) + " != " + pret(m.right)
+                return comparison(m.left, " != ", m.right)
 
-        return "not " + pret(val)
+        return wrap("not " + operand(val, NOT), NOT)
 
     return str(exp)
 
@@ -1532,13 +1592,13 @@ def try_fname(exp, add_color=False):
         return None
 
 
-def pretty_bytes(size, val, add_color=False):
+def pretty_bytes(size, val, add_color=False, parentheses=False):
     """
     ("bytes", size, val): a word is shown as its value, a number as the hex
     of its `size` bytes, anything else as its value with its width.
     """
     if size == 32:
-        return prettify(val, add_color=add_color, parentheses=False)
+        return prettify(val, add_color=add_color, parentheses=parentheses)
 
     if type(val) == int and type(size) == int:
         return "0x" + format(val, f"0{2 * size}x")
@@ -1574,7 +1634,7 @@ def pretty_memory(exp, add_color=False):
         return prettify(exp, add_color=add_color)
 
     if opcode(exp) != "data":
-        return (prettify(exp, add_color=add_color),)
+        return (prettify(exp, add_color=add_color, parentheses=False),)
 
     exp = exp[1:]
 
