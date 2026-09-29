@@ -141,11 +141,14 @@ class Function(EasyCopy):
                 )
             return False
 
-        def rem(exp):
+        def rem(exp, element=False):
             if type(exp) not in (list, tuple) or is_validation(exp):
                 return exp
 
-            return rem_masks(type(exp)(rem(e) for e in exp))
+            # the elements of a data keep their mask: it makes their width
+            is_data = opcode(exp) == "data"
+            res = type(exp)(rem(e, is_data) for e in exp)
+            return res if element else rem_masks(res)
 
         return rem(trace)
 
