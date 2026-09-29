@@ -75,6 +75,42 @@ def is_dispatch(cond):
     return leaves <= {"calldatasize", 4, "lt", "gt", "le", "ge", "iszero", "bool"}
 
 
+def selector_test(cond):
+    """
+    (hash, taken) if cond compares the selector with a function's hash,
+    taken being whether it holds when they're equal, None otherwise.
+
+    The dispatcher jumps to a function when the selector equals its hash,
+    or past it when they differ: the function then follows the jump. That's
+    a difference, zero if they're equal: a sub, or a xor.
+    """
+    if opcode(cond) == "iszero":
+        res = selector_test(cond[1])
+        return res and (res[0], not res[1])
+
+    if opcode(cond) in ("eq", "xor") and len(cond) == 3:
+        for num, other in ((cond[1], cond[2]), (cond[2], cond[1])):
+            if type(num) is int and str(("cd", 0)) in str(other):
+                if opcode(cond) == "eq":
+                    return num, True
+                elif num < 2**32:
+                    return num, False
+
+    m = match(cond, ("add", ":int:num", ":other"))
+    if m and str(("cd", 0)) in str(m.other):
+        if m2 := match(m.other, ("mul", -1, ":selector")):
+            # num - selector
+            num, other = m.num, m2.selector
+        else:
+            # selector - (-num)
+            num, other = -m.num % 2**256, m.other
+
+        if num < 2**32 and str(("cd", 0)) in str(other):
+            return num, False
+
+    return None
+
+
 def strip_markers(trace):
     res = []
     for line in trace:
@@ -251,14 +287,17 @@ class Loader(EasyCopy):
             # every other function again when decompiling it.
 
             def selector_checks(exp):
-                if (
-                    (m := match(exp, ("if", ":cond", ":if_true", Any)))
-                    and len(m.if_true) > 0
-                    and match(m.if_true[-1], ("funccall", Any, Any, Any))
-                ):
-                    return [is_zero(m.cond)]
-                else:
-                    return []
+                if m := match(exp, ("if", ":cond", ":if_true", ":if_false")):
+                    if len(m.if_true) > 0 and match(
+                        m.if_true[-1], ("funccall", Any, Any, Any)
+                    ):
+                        return [is_zero(m.cond)]
+                    if len(m.if_false) > 0 and match(
+                        m.if_false[-1], ("funccall", Any, Any, Any)
+                    ):
+                        return [m.cond]
+
+                return []
 
             self.fallback_known = tuple(find_f_list(trace, selector_checks))
 

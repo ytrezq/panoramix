@@ -38,7 +38,7 @@ from panoramix.utils.helpers import (
     replace,
 )
 
-from .loader import apply_entry, entry_known
+from .loader import apply_entry, entry_known, selector_test
 from .stack import Stack, fold_stacks, stack_vars
 
 logger = logging.getLogger(__name__)
@@ -888,19 +888,12 @@ class VM(EasyCopy):
                 known=self.known + (is_zero(if_condition),),
             )
 
-            if self.just_fdests:
-                if (
-                    (m := match(if_condition, ("eq", ":fx_hash", ":is_cd")))
-                    and str(("cd", 0)) in str(m.is_cd)
-                    and isinstance(m.fx_hash, int)
-                ):
-                    n_true.trace = [("funccall", m.fx_hash, target, tuple_stack)]
-                if (
-                    (m := match(if_condition, ("eq", ":is_cd", ":fx_hash")))
-                    and str(("cd", 0)) in str(m.is_cd)
-                    and isinstance(m.fx_hash, int)
-                ):
-                    n_true.trace = [("funccall", m.fx_hash, target, tuple_stack)]
+            if self.just_fdests and (test := selector_test(if_condition)):
+                fx_hash, taken = test
+                if taken:
+                    n_true.trace = [("funccall", fx_hash, target, tuple_stack)]
+                else:
+                    n_false.trace = [("funccall", fx_hash, n_false.start, tuple_stack)]
 
             bool_condition = arithmetic.eval_bool(if_condition, symbolic=False)
 
