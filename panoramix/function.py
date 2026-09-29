@@ -24,7 +24,6 @@ from panoramix.utils.helpers import (
     find_f,
     find_f_list,
     opcode,
-    replace_f,
 )
 from panoramix.utils.signatures import (
     get_abi_name,
@@ -83,6 +82,8 @@ class Function(EasyCopy):
         self.is_regular = self.const is None and self.getter is None
 
     def cleanup_masks(self, trace):
+        """A param as its type makes it: _param1 rather than address(_param1)."""
+
         def rem_masks(exp):
             if m := match(exp, ("bool", ("cd", ":int:idx"))):
                 idx = m.idx
@@ -92,17 +93,54 @@ class Function(EasyCopy):
                 ):
                     return ("cd", idx)
 
-            elif m := match(exp, ("mask_shl", ":size", 0, 0, ("cd", ":int:idx"))):
-                size, idx = m.size, m.idx
+            elif m := match(
+                exp, ("mask_shl", ":int:size", ":int:off", 0, ("cd", ":int:idx"))
+            ):
+                size, off, idx = m.size, m.off, m.idx
                 if idx in self.inferred_params:
                     kind = self.inferred_params[idx][0]
-                    def_size = type_to_mask(kind)
-                    if size == def_size:
-                        return ("cd", idx)
+                    if kind.startswith("bytes") and kind[5:].isdigit():
+                        # left-aligned
+                        if size == 8 * int(kind[5:]) and off + size == 256:
+                            return ("cd", idx)
+                    elif off == 0 and not kind.startswith("int"):
+                        # (a mask isn't how intN params are made)
+                        def_size = type_to_mask(kind)
+                        if kind.startswith("uint") and kind[4:].isdigit():
+                            def_size = int(kind[4:])
+                        if size == def_size:
+                            return ("cd", idx)
+
+            elif m := match(exp, ("signextend", ":int:b", ("cd", ":int:idx"))):
+                idx = m.idx
+                if (
+                    idx in self.inferred_params
+                    and self.inferred_params[idx][0] == f"int{8 * (m.b + 1)}"
+                ):
+                    return ("cd", idx)
 
             return exp
 
-        return replace_f(trace, rem_masks)
+        def is_validation(exp):
+            # `require _param1 == uint16(_param1)`, that reverts if the
+            # calldata has more than the type allows: without the mask, it
+            # would read as always true.
+            if (m := match(exp, ("eq", ":a", ":b"))) and (
+                opcode(m.a) == "cd" or opcode(m.b) == "cd"
+            ):
+                cd, other = (m.a, m.b) if opcode(m.a) == "cd" else (m.b, m.a)
+                return opcode(other) in ("mask_shl", "bool", "signextend") and (
+                    other[-1] == cd
+                )
+            return False
+
+        def rem(exp):
+            if type(exp) not in (list, tuple) or is_validation(exp):
+                return exp
+
+            return rem_masks(type(exp)(rem(e) for e in exp))
+
+        return rem(trace)
 
     def make_names(self):
         new_name = self.name.split("(")[0]
