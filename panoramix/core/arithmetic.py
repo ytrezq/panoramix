@@ -337,8 +337,8 @@ def eval_bool(exp, known_true=True, symbolic=True):
     return None
 
 
-def add(left, right):
-    return (left + right) & UINT_256_MAX
+def add(*terms):
+    return sum(terms) & UINT_256_MAX
 
 
 def addmod(left, right, mod):
@@ -376,10 +376,11 @@ def smod(value, mod):
     return (abs(value) % abs(mod) * pos_or_neg) & UINT_256_MAX
 
 
-def mul(left, right):
-    if left == 0 or right == 0:
-        return 0
-    return (left * right) & UINT_256_MAX
+def mul(*factors):
+    res = 1
+    for f in factors:
+        res = (res * f) & UINT_256_MAX
+    return res
 
 
 def mulmod(left, right, mod):
@@ -458,12 +459,18 @@ def sar(shift_length, value):
         return (value >> shift_length) & UINT_256_MAX
 
 
-def or_op(left, right=0):
-    return left | right
+def or_op(*terms):
+    res = 0
+    for t in terms:
+        res |= t
+    return res
 
 
-def xor(left, right):
-    return left ^ right
+def xor(*terms):
+    res = 0
+    for t in terms:
+        res ^= t
+    return res
 
 
 def byte_op(position, value):
