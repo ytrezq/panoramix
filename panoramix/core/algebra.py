@@ -1003,6 +1003,14 @@ def _mask_op(exp, size=256, offset=0, shl=0, shr=0):
         rest = exp[1:]
         return or_op(*[mask_op(e, size, offset, shl, shr) for e in rest])
 
+    if (
+        (m := match(exp, ("signextend", ":int:b", ":val")))
+        and all_concrete(size, offset)
+        and offset + size <= 8 * (m.b + 1)
+    ):
+        # bits that signextend doesn't change
+        return mask_op(m.val, size, offset, shl)
+
     if opcode(exp) == "mask_shl":
         params = exp[1:]
         shl = sub_op(shl, shr)
@@ -1083,6 +1091,50 @@ def shr_op(exp, off):
         return 0
 
     return mask_op(exp, size=256 - off, offset=off, shr=off)
+
+
+def signextend_op(b, val):
+    """
+    ("signextend", b, val): the lowest 8 * (b + 1) bits of val as a signed
+    number, the bits above them copies of the highest of them.
+    """
+    if type(b) is not int:
+        return ("signextend", b, val)
+
+    bits = 8 * (b + 1)
+    if bits >= 256:
+        return val
+
+    if type(val) is int:
+        low = val & (2**bits - 1)
+        if low >> (bits - 1):
+            return low | (2**256 - 2**bits)
+        return low
+
+    if m := match(val, ("signextend", ":int:c", ":inner")):
+        return signextend_op(min(b, m.c), m.inner)
+
+    # a number made of some bits of another one: only its lowest bits count,
+    # and if it has less than them the highest one is 0
+    if (
+        (m := match(val, ("mask_shl", ":int:size", ":int:off", ":int:shl", ":inner")))
+        and m.shl == -m.off
+        and m.off >= 0
+    ):
+        if m.size < bits:
+            return val
+        if m.off == 0:
+            return signextend_op(b, m.inner)
+        if m.size > bits:
+            return ("signextend", b, ("mask_shl", bits, m.off, -m.off, m.inner))
+
+    if (m := match(val, ("storage", ":int:size", ":int:off", ":loc"))) and m.off >= 0:
+        if m.size < bits:
+            return val
+        if m.size > bits:
+            return ("signextend", b, ("storage", bits, m.off, m.loc))
+
+    return ("signextend", b, val)
 
 
 def try_add(self, other):

@@ -34,6 +34,7 @@ from panoramix.core.algebra import (
     safe_max_op,
     safe_min_op,
     shr_op,
+    signextend_op,
     simplify,
     simplify_max,
     sub_op,
@@ -336,6 +337,9 @@ def simplify_exp(exp):
     if m := match(exp, ("shr", ":int:off", ":val")):
         # a shift by an amount the vm didn't know, known now
         exp = shr_op(m.val, m.off)
+
+    if m := match(exp, ("signextend", ":b", ":val")):
+        exp = signextend_op(m.b, m.val)
 
     if m := match(exp, ("mask_shl", 246, 5, 0, ":exp")):
         exp = (

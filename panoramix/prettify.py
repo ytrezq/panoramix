@@ -1044,8 +1044,12 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         return pretty_bytes(m.size, m.val, add_color, parentheses=ctx)
 
     if m := match(exp, ("signextend", ":int:b", ":val")):
+        val = m.val
+        if (m2 := match(val, ("type", ":size", ":loc"))) and m2.size == 8 * (m.b + 1):
+            # a field of the storage of that size: an int rather than an uint
+            val = m2.loc
         return (
-            col(f"int{8 * (m.b + 1)}(", COLOR_GRAY) + pret(m.val) + col(")", COLOR_GRAY)
+            col(f"int{8 * (m.b + 1)}(", COLOR_GRAY) + pret(val) + col(")", COLOR_GRAY)
         )
 
     if m := match(exp, ("signextend", ":b", ":val")):
