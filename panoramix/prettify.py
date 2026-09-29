@@ -1160,11 +1160,10 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
     #    if exp ~ ('mask_shl', 251, 5, 0, :val):
     #        return pret(('mul', 32, val))
 
-    if (
-        (m := match(exp, ("mask_shl", ":size", 5, 0, ":val")))
-        or (m := match(exp, ("mask", ":size", 5, ":val")))
-    ) and m.size > 245:
-        size, val = m.size, m.val
+    if (m := match(exp, ("mask_shl", 251, 5, 0, ":val"))) or (
+        m := match(exp, ("mask", 251, 5, ":val"))
+    ):
+        val = m.val
         if m := match(val, ("add", 31, ":num")):
             return f"ceil32({pret(m.num)})"
         else:
