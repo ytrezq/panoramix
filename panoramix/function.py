@@ -50,6 +50,13 @@ def find_parents(exp, child):
     return res
 
 
+def word(exp):
+    """A word of data (see memloc, "bytes"), as its value."""
+    if m := match(exp, ("bytes", 32, ":val")):
+        return m.val
+    return exp
+
+
 class Function(EasyCopy):
     def __init__(self, hash, trace):
         self.hash = hash
@@ -535,7 +542,7 @@ class Function(EasyCopy):
         self.getter = None
         self.simplify_string_getter_from_storage()
         if self.const is None and self.read_only and len(self.returns) == 1:
-            ret = self.returns[0][1]
+            ret = word(self.returns[0][1])
             if match(ret, ("bool", ("storage", Any, Any, ":loc"))):
                 self.getter = (
                     ret  # we have to be careful when using this for naming purposes,
@@ -547,7 +554,7 @@ class Function(EasyCopy):
             elif opcode(ret) == "storage":
                 self.getter = ret
             elif opcode(ret) == "data":
-                terms = ret[1:]
+                terms = [word(t) for t in ret[1:]]
                 # for structs, we check if all the parts of the struct are storage from the same
                 # location. if so, we return the location number
 

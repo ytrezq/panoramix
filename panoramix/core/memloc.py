@@ -235,7 +235,32 @@ def split_or(value):
     return result
 
 
+"""
+
+    The width of what's in memory.
+
+    A value written to memory is as wide as the memory it's written to - the
+    32 bytes of an mstore, the 1 byte of an mstore8... - and as a part of a
+    ("data", ...), what's read back is as wide as sizeof says: the top bit of
+    a mask, 256 bits for a word. They differ for a narrow value written to a
+    word (an address, say: sizeof is 160 bits), a number that isn't a word
+    (the 4 bytes of a selector), zeroes...
+
+    ("bytes", size, exp) is exp, as `size` bytes: the lowest ones of its
+    value. The memory model gives it to what it reads back when the width
+    of the value isn't the width of the memory it's in. As a number, it's
+    the value of exp.
+
+"""
+
+
 def sizeof(exp):  # returns size of expression in *bits*
+    if m := match(exp, ("bytes", ":size", Any)):
+        return bits(m.size)
+
+    if opcode(exp) == "data":
+        return add_op(*[sizeof(e) for e in exp[1:]]) if len(exp) > 1 else 0
+
     if m := match(exp, ("storage", ":size", ...)):
         return m.size
 
@@ -251,9 +276,6 @@ def sizeof(exp):  # returns size of expression in *bits*
     assert not match(exp, ("mem", ":idx"))
     assert not match(exp, ("arr", ":l", Any))
 
-    #    if exp ~ ('bytes', :l, _):
-    #        return bits(l)
-
     if type(exp) == int and exp > 2**256:
         return bits(
             ((exp).bit_length() + 7) // 8
@@ -261,6 +283,21 @@ def sizeof(exp):  # returns size of expression in *bits*
 
     return 256
     return None
+
+
+def with_width(exp, size):
+    """exp as the `size` bytes of memory it's in (see "bytes")."""
+    if opcode(exp) == "bytes":
+        exp = exp[2]
+
+    if opcode(exp) == "mask_shl" and all_concrete(*exp[1:]):
+        # a number, and as such a word
+        exp = apply_mask(exp[4], exp[1], exp[2], exp[3])
+
+    if sub_op(sizeof(exp), bits(size)) == 0:
+        return exp
+
+    return ("bytes", size, exp)
 
 
 def split_setmem(line):
@@ -392,7 +429,11 @@ assert memloc_overwrite(("range", 64, "x"), ("range", 70, add_op("unknown", 100)
 ]
 
 
-def slice_exp(exp, left, right):
+def slice_exp(exp, left, right, width=None):
+    """
+    Bytes left to right of exp, `width` bits wide (the width of the memory
+    it's in, sizeof by default).
+    """
     size = sub_op(right, left)
 
     logger.debug("slicing %s, offset %i bytes, until %i bytes", exp, left, right)
@@ -411,13 +452,20 @@ def slice_exp(exp, left, right):
         else:
             return None
 
-    logger.debug("sizeof exp %i", sizeof(exp))
-    off = sub_op(sizeof(exp), bits(right))
-    logger.debug("applying mask, size 8*%i, offset %i", size, off)
+    if opcode(exp) == "bytes":
+        if width is None:
+            width = bits(exp[1])
+        exp = exp[2]
+
+    if width is None:
+        width = sizeof(exp)
+
+    off = sub_op(width, bits(right))
+    logger.debug("applying mask, size 8*%s, offset %s", size, off)
 
     m = mask_op(exp, size=bits(size), offset=off, shr=off)
     logger.debug("result %s", m)
-    return m
+    return with_width(m, size)
 
 
 assert slice_exp(("mem", ("range", 32, 10)), 2, 4) == ("mem", ("range", 34, 2))
@@ -486,9 +534,11 @@ def splits_mem(memloc, split, memval, split_val=None):
 
     assert in_left == 0 if safe_le_op(right, m_left) else True
 
-    val_left = slice_exp(memval, 0, in_left) if left is not None else None
+    val_left = (
+        slice_exp(memval, 0, in_left, width=bits(m_len)) if left is not None else None
+    )
     val_right = (
-        slice_exp(memval, in_right, sub_op(m_right, m_left))
+        slice_exp(memval, in_right, sub_op(m_right, m_left), width=bits(m_len))
         if right is not None
         else None
     )
@@ -516,12 +566,15 @@ def splits_mem(memloc, split, memval, split_val=None):
 
         else:
             center_offset = sub_op(s_right, center_right)
+            if opcode(split_val) == "bytes":
+                split_val = split_val[2]
             center_val = mask_op(
                 split_val,
                 size=mul_op(center_len, 8),
                 offset=mul_op(center_offset, 8),
                 shr=mul_op(center_offset, 8),
             )
+            center_val = with_width(center_val, center_len)
 
         center_range = ("range", center_left, center_len)
 
@@ -628,7 +681,7 @@ def replace_max_with_MAX(exp):
 
 def fill_mem(exp, split, split_val):
     if exp == ("mem", split):
-        return split_val
+        return with_width(split_val, split[2])
 
     op, memloc = exp
     assert op == "mem"
@@ -702,7 +755,7 @@ def fill_mem(exp, split, split_val):
     logger.debug(f"inserted value offset {center_in_start}, length {center_in_len}")
     logger.debug(f"cutting this out of {split_val}")
 
-    res_center = slice_exp(split_val, center_in_start, center_in_len)
+    res_center = slice_exp(split_val, center_in_start, center_in_len, width=bits(s_len))
 
     logger.debug(f"inserted value after slicing: {res_center}")
 
@@ -712,9 +765,8 @@ def fill_mem(exp, split, split_val):
     if safe_ge_zero(sizeof(res_center)) is True:
         res.append(res_center)
     else:
-        assert False, sizeof(
-            res_center
-        )  # this shouldn't happen considering the above checks?
+        # we can't tell that the part of the split that's read is there
+        return exp
 
     if safe_ge_zero(sizeof(res_right)) is True:
         if sizeof(res_right) != 0:

@@ -2,6 +2,7 @@ import logging
 
 from panoramix.core.algebra import divisible_bytes, minus_op, safe_le_op, to_bytes
 from panoramix.core.masks import mask_to_type
+from panoramix.core.memloc import sizeof
 from panoramix.matcher import Any, match
 from panoramix.prettify import pprint_trace, pretty_stor
 from panoramix.utils.helpers import (
@@ -465,6 +466,10 @@ def _sparser(orig_storages):
 
         if match(e, ("sha3", ("data", ...))):
             terms = e[1][1:]  # "..."
+            if any(sizeof(t) != 256 for t in terms):
+                # not a hash of words, as the slots of mappings are
+                return e
+            terms = [t[2] if opcode(t) == "bytes" else t for t in terms]
             e = ("sha3",) + tuple(terms)
         if m := match(e, ("sha3", ":int:loc")):
             return ("loc", m.loc)

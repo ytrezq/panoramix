@@ -356,6 +356,11 @@ def add_op(*args):
 
 
 def bits(exp):
+    """The number of bits in exp bytes."""
+    if opcode(exp) == "add":
+        # a size, too small to overflow: the bits of the terms add up
+        return add_op(*[bits(e) for e in exp[1:]])
+
     return mul_op(exp, 8)
 
 

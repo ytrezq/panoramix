@@ -47,6 +47,7 @@ from panoramix.core.memloc import (
     fill_mem,
     memloc_overwrite,
     range_overlaps,
+    sizeof,
     split_setmem,
     split_store,
     splits_mem,
@@ -68,7 +69,6 @@ from panoramix.utils.helpers import (
     find_f_list,
     find_f_set,
     find_op_list,
-    is_array,
     opcode,
     replace,
     replace_f,
@@ -233,10 +233,105 @@ def simplify_trace(trace, timeout=0):
     return trace
 
 
+# The operands that are bytes (see memloc, "bytes"): the rest are numbers.
+BYTES_OPERANDS = {
+    "data": None,  # all of them
+    "arr": range(2, 2**32),  # after the length
+    "sha3": None,
+    "return": (1,),
+    "revert": (1,),
+    "log": (1,),
+    "call": (4, 5),
+    "staticcall": (4, 5),
+    "callcode": (4, 5),
+    "delegatecall": (3, 4),
+    "create": (2,),
+    "create2": (2,),
+    "precompiled": (3,),
+}
+
+
+def unwrap_bytes(exp):
+    """exp, with the operands that are numbers not wrapped in "bytes"."""
+    op = opcode(exp)
+    if op == "bytes":
+        return exp
+
+    keep = BYTES_OPERANDS.get(op, ())
+    if keep is None:
+        return exp
+
+    if not any(opcode(e) == "bytes" for e in exp[1:]):
+        return exp
+
+    return (op,) + tuple(
+        e[2] if opcode(e) == "bytes" and idx + 1 not in keep else e
+        for idx, e in enumerate(exp[1:])
+    )
+
+
+def simplify_bytes(exp):
+    _, size, val = exp
+    val = simplify_exp(val)
+
+    if (m := match(val, ("bytes", ":inner_size", ":inner"))) and safe_le_op(
+        m.inner_size, size
+    ) is True:
+        val = m.inner
+
+    if val != 0 and sub_op(sizeof(val), bits(size)) == 0:
+        return val
+
+    return ("bytes", size, val)
+
+
+def data_elements(res):
+    """
+    The elements of a data without "bytes" when they're as wide as their
+    value, zeroes followed by a value merged into it, and zeroes into one.
+    """
+    res = [
+        e[2] if opcode(e) == "bytes" and sub_op(sizeof(e[2]), bits(e[1])) == 0 else e
+        for e in res
+    ]
+
+    def zeroes(e):
+        # the width of e if it's zeroes, None otherwise
+        if e == 0:
+            return 256
+        if (m := match(e, ("bytes", ":size", 0))) and type(m.size) is int:
+            return bits(m.size)
+        return None
+
+    merged = []
+    for e in res:
+        if merged and (z := zeroes(merged[-1])) is not None:
+            w = sizeof(e)
+            if zeroes(e) is not None:
+                merged[-1] = ("bytes", (z + zeroes(e)) // 8, 0)
+                continue
+            if type(w) is int and w % 8 == 0 and opcode(merged[-1]) == "bytes":
+                inner = e[2] if opcode(e) == "bytes" else e
+                merged[-1] = ("bytes", (z + w) // 8, inner)
+                continue
+        merged.append(e)
+
+    return [
+        e[2] if opcode(e) == "bytes" and sub_op(sizeof(e[2]), bits(e[1])) == 0 else e
+        for e in merged
+    ]
+
+
 @cached
 def simplify_exp(exp):
     if type(exp) == list:
         return exp
+
+    if type(exp) is tuple:
+        exp = unwrap_bytes(exp)
+
+    if opcode(exp) == "bytes":
+        return simplify_bytes(exp)
 
     if m := match(exp, ("shr", ":int:off", ":val")):
         # a shift by an amount the vm didn't know, known now
@@ -271,9 +366,6 @@ def simplify_exp(exp):
 
         res += tuple(symbols)
         exp = ("and",) + res
-
-    if opcode(exp) == "data" and all(t == 0 for t in exp[1:]):
-        return 0
 
     if m := match(exp, ("iszero", ("iszero", ":e"))):
         exp = ("bool", m.e)
@@ -466,6 +558,8 @@ def simplify_exp(exp):
         res = res2
 
         # could do the same for mem slices, but no case of that happening yet
+
+        res = data_elements(res)
 
         if len(res) == 1:
             return res[0]
@@ -1241,29 +1335,6 @@ def cleanup_conds(trace):
             res.append(line)
 
     return res
-
-
-def sizeof(exp):  # returns size of expression in *bits*
-    if m := match(exp, ("storage", ":size", ...)):
-        return m.size
-
-    if m := match(exp, ("mask_shl", ":size", ...)):
-        return m.size
-
-    if (m := match(exp, (":op", Any, ":size_bytes"))) and is_array(m.op):
-        return bits(m.size_bytes)
-
-    if m := match(exp, ("mem", ("range", Any, ":size_bytes"))):
-        return bits(m.size_bytes)
-
-    assert not match(exp, ("mem", ":idx"))
-
-    return None
-
-
-assert sizeof(("mask_shl", 96, 160, 0, "x")) == 96
-assert sizeof(("mem", ("range", 64, 32))) == 32 * 8
-assert sizeof("x") == None
 
 
 @cached

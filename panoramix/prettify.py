@@ -59,6 +59,10 @@ from panoramix.utils.signatures import get_param_name
 
 logger = logging.getLogger(__name__)
 
+# the selectors of Panic(uint256) and Error(string)
+PANIC = 0x4E487B71
+ERROR = 0x08C379A0
+
 PANIC_CODES = {
     0x00: "Used for generic compiler inserted panics.",
     0x01: "If you call assert with an argument that evaluates to false.",
@@ -704,13 +708,20 @@ def pretty_line(r, add_color=True):
         res_mem = pretty_memory(param, add_color=True)
         ret_val = ", ".join(res_mem)
 
-        if m := match(r, ("revert", ("data", "'NH{q'", ":int:panic_code"))):
+        if m := match(r, ("revert", ("data", ("bytes", 4, PANIC), ":int:panic_code"))):
             explanation = (
                 (f" {COLOR_GRAY}# " + PANIC_CODES[m.panic_code] + ENDC)
                 if m.panic_code in PANIC_CODES
                 else ""
             )
             yield f"{op} Panic({m.panic_code}) {explanation}"
+        elif (
+            (m := match(r, ("revert", ("data", ("bytes", 4, ERROR), ...))))
+            and len(res_mem) == 2
+            and res_mem[1][:1] == "'"
+        ):
+            # revert("...") / require(..., "...")
+            yield f"{op} {res_mem[1]}"
         elif len(clean_color(ret_val)) < 120 or opcode(param) != "data":
             yield f"{op} {ret_val}"
         else:
@@ -962,6 +973,9 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
 
     if opcode(exp) == "data":
         return ", ".join(pretty_memory(exp, add_color=add_color))
+
+    if m := match(exp, ("bytes", ":size", ":val")):
+        return pretty_bytes(m.size, m.val, add_color)
 
     if opcode(exp) == "arr" and len(exp) > 1:
         _, l, *terms = exp
@@ -1512,6 +1526,26 @@ def try_fname(exp, add_color=False):
         return None
 
 
+def pretty_bytes(size, val, add_color=False):
+    """
+    ("bytes", size, val): a word is shown as its value, a number as the hex
+    of its `size` bytes, anything else as its value with its width.
+    """
+    if size == 32:
+        return prettify(val, add_color=add_color, parentheses=False)
+
+    if type(val) == int and type(size) == int:
+        return "0x" + format(val, f"0{2 * size}x")
+
+    return (
+        colorize("Bytes(", COLOR_GRAY, add_color)
+        + prettify(size, add_color=add_color, parentheses=False)
+        + colorize(", ", COLOR_GRAY, add_color)
+        + prettify(val, add_color=add_color, parentheses=False)
+        + colorize(")", COLOR_GRAY, add_color)
+    )
+
+
 def pretty_fname(exp, add_color=False, force=False):
     if type(exp) == int:
         fname = try_fname(exp, add_color)
@@ -1555,19 +1589,9 @@ def pretty_memory(exp, add_color=False):
     # merge things that look like string into a string
 
     while idx < len(exp):
-        if (
-            idx == 0
-            and type(exp[0]) == tuple
-            and exp[0][:4] == ("mask_shl", 32, 224, 0)
-            and type(exp[0][4]) == int
-        ):
-            # This happens often in Log and Revert, first
-            # memory result being an 8-byte identifier.
-            # Definitely deserves a more generic solution.
-            #
-            # example: 0xd883209C4DCd497f24633C627a4E451013424841, sendFoods function
-            v = exp[0][4] >> 224
-            res.append(pretty_fname(v, add_color))
+        if idx == 0 and (m := match(exp[0], ("bytes", 4, ":int:selector"))):
+            # a selector: of an error, of an event...
+            res.append(pretty_fname(m.selector, add_color))
             idx += 1
             continue
 

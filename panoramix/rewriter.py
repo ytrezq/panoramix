@@ -85,7 +85,12 @@ def postprocess_exp(exp):
             # potential array in data?
             assert concrete[0] % 32 == 0
             loc = concrete[0] // 32
-            if loc + 1 < len(terms) and loc > terms.index(concrete[0]):
+            if (
+                loc + 1 < len(terms)
+                and loc > terms.index(concrete[0])
+                # the offset is one of words up to the length
+                and all(sizeof(t) == 256 for t in terms[: loc + 1])
+            ):
                 arr = ("arr",) + terms[loc:]
 
                 # heuristics for cleaning up various misprocessed stuff
