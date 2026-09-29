@@ -110,6 +110,11 @@ STATE_CHANGING_OPS = (
     "selfdestruct",
 )
 
+# A codecopy of more bytes than that is left as code.data: the number would be
+# unreadable anyway, and one of more than 4300 digits (1786 bytes) can't even be
+# turned into a string since python 3.11, which aborts the whole function.
+MAX_CODECOPY_SIZE = 1024
+
 
 def forget(known, names):
     return tuple(fact for fact in known if not mentions(fact, names))
@@ -1184,18 +1189,15 @@ class VM(EasyCopy):
             call_pos = stack.pop()
             data_len = stack.pop()
 
-            if (type(call_pos), type(data_len)) == (
-                int,
-                int,
-            ) and call_pos + data_len < len(self.loader.binary):
+            if (
+                (type(call_pos), type(data_len)) == (int, int)
+                and call_pos + data_len <= len(self.loader.binary)
+                and data_len <= MAX_CODECOPY_SIZE
+            ):
                 res = 0
-                for i in range(call_pos - 1, call_pos + data_len - 1):
+                for i in range(call_pos, call_pos + data_len):
                     res = res << 8
-                    res += self.loader.binary[
-                        i
-                    ]  # this breaks with out of range for some contracts
-                    # may be because we're usually getting compiled code binary
-                    # and not runtime binary
+                    res += self.loader.binary[i]
                 trace(
                     ("setmem", ("range", mem_pos, data_len), res)
                 )  # ('bytes', data_len, res)))
