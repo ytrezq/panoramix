@@ -50,6 +50,80 @@ def set_func(hash):
     _func = _abi[hash]
 
 
+def is_dynamic(kind, components=None):
+    """If a param of the type is dynamic: in the head, only its offset."""
+    if kind in ("bytes", "string") or kind.endswith("[]"):
+        return True
+
+    if kind.endswith("]"):
+        count = kind[kind.rindex("[") + 1 : -1]
+        return not count.isdigit() or is_dynamic(kind[: kind.rindex("[")], components)
+
+    if kind == "tuple":
+        # without its components, where it ends isn't known
+        return components is None or any(
+            is_dynamic(c["type"], c.get("components")) for c in components
+        )
+
+    return False
+
+
+def head_words(kind, name, components=None):
+    """
+    [(type, name)] of the words a param takes in the head of the calldata:
+    all the elements of a static tuple or array, the offset to anything
+    dynamic.
+    """
+    if is_dynamic(kind, components):
+        return [(kind, name)]
+
+    if kind.endswith("]"):
+        base = kind[: kind.rindex("[")]
+        count = int(kind[kind.rindex("[") + 1 : -1])
+        return [
+            word
+            for idx in range(count)
+            for word in head_words(base, f"{name}[{idx}]", components)
+        ]
+
+    if kind == "tuple":
+        res = []
+        for idx, c in enumerate(components):
+            c_name = c.get("name") or f"_param{idx + 1}"
+            res += head_words(c["type"], f"{name}.{c_name}", c.get("components"))
+        return res
+
+    return [(kind, name)]
+
+
+def calldata_params(inputs):
+    """{position in the calldata: (type, name)} for the words of the params."""
+    res = {}
+    loc = 4
+    for p in inputs:
+        for word in head_words(p["type"], p["name"], p.get("components")):
+            res[loc] = word
+            loc += 32
+
+    return res
+
+
+def canonical_type(kind, components=None):
+    """The type as in a signature: a tuple is its components in parentheses."""
+    if kind.startswith("tuple") and components is not None:
+        inside = ",".join(
+            canonical_type(c["type"], c.get("components")) for c in components
+        )
+        return f"({inside}){kind[len('tuple'):]}"
+
+    return kind
+
+
+def has_length(kind):
+    """If the data a param points to starts with its length."""
+    return kind in ("bytes", "string", "array") or kind.endswith("[]")
+
+
 def get_param_name(cd, add_color=False, func=None):
     global _func
     loc = match(cd, ("cd", ":loc")).loc
@@ -63,45 +137,59 @@ def get_param_name(cd, add_color=False, func=None):
     if "inputs" not in _func:
         return cd
 
+    params = calldata_params(_func["inputs"])
+    names = {name: kind for kind, name in params.values()}
+
     if type(loc) != int:
         cd = cleanup_mul_1(cd)
+        loc = cd[1]
 
-        if m := match(loc, ("add", 4, ("param", ":point_loc"))):
-            return colorize(m.point_loc + ".length", COLOR_GREEN, add_color)
+        # a param is where the data it points to is (after the selector)
+        if (m := match(loc, ("add", 4, ("param", ":name")))) and has_length(
+            names.get(m.name, "")
+        ):
+            return colorize(m.name + ".length", COLOR_GREEN, add_color)
 
-        if m := match(loc, ("add", 4, ("cd", ":point_loc"))):
-            return colorize(
-                str(get_param_name(("cd", m.point_loc), func=func)) + ".length",
-                COLOR_GREEN,
-                add_color,
-            )
+        if (m := match(loc, ("add", ":int:offset", ("cd", ":int:point_loc")))) and (
+            m.point_loc in params
+        ):
+            kind, name = params[m.point_loc]
+            if m.offset == 4 and has_length(kind):
+                return colorize(name + ".length", COLOR_GREEN, add_color)
 
-        if m := match(loc, ("add", ":int:offset", ("cd", ":point_loc"))):
-            return colorize(
-                str(get_param_name(("cd", m.point_loc), func=func))
-                + f"[{(m.offset - 36)//32}]",
-                COLOR_GREEN,
-                add_color,
-            )
+            # an element of an array of words or of offsets
+            if kind.endswith("[]"):
+                components = {p["name"]: p.get("components") for p in _func["inputs"]}
+                element = head_words(kind[:-2], name, components.get(name))
+            else:
+                element = None
+            if (
+                m.offset >= 36
+                and (m.offset - 36) % 32 == 0
+                and (kind == "array" or element is not None)
+                and (element is None or len(element) == 1)
+            ):
+                return colorize(
+                    f"{name}[{(m.offset - 36) // 32}]", COLOR_GREEN, add_color
+                )
 
         return cd
 
-    if (loc - 4) % 32 != 0:  # unusual parameter
+    if loc not in params:  # an unusual parameter
         return cd
 
-    num = (cd[1] - 4) // 32
-    if num >= len(_func["inputs"]):
-        return cd
-
-    assert num < len(_func["inputs"]), str(cd) + " // " + str(func["inputs"])
-
-    return colorize(_func["inputs"][num]["name"], COLOR_GREEN, add_color)
+    return colorize(params[loc][1], COLOR_GREEN, add_color)
 
 
 def get_abi_name(hash):
     a = _abi[hash]
     if "inputs" in a:
-        return "{}({})".format(a["name"], ",".join([x["type"] for x in a["inputs"]]))
+        return "{}({})".format(
+            a["name"],
+            ",".join(
+                canonical_type(x["type"], x.get("components")) for x in a["inputs"]
+            ),
+        )
     else:
         return "{}(?)".format(a["name"])
 

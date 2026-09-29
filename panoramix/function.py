@@ -26,6 +26,7 @@ from panoramix.utils.helpers import (
     opcode,
 )
 from panoramix.utils.signatures import (
+    calldata_params,
     get_abi_name,
     get_func_name,
     get_func_params,
@@ -202,11 +203,7 @@ class Function(EasyCopy):
 
         params = get_func_params(self.hash)
         if params:
-            res = {}
-            idx = 4
-            for p in params:
-                res[idx] = (p["type"], p["name"])
-                idx += 32
+            res = calldata_params(params)
         else:
             # good testing: solidstamp, auditContract
             # try to find all the references to parameters and guess their types
