@@ -341,16 +341,6 @@ def simplify_exp(exp):
     if m := match(exp, ("signextend", ":b", ":val")):
         exp = signextend_op(m.b, m.val)
 
-    if m := match(exp, ("mask_shl", 246, 5, 0, ":exp")):
-        exp = (
-            "mask_shl",
-            251,
-            5,
-            0,
-            m.exp,
-        )  # mathematically incorrect, but this appears as an artifact of other
-        # ops often.
-
     if opcode(exp) == "and":
         _, *terms = exp
         real = 2**256 - 1

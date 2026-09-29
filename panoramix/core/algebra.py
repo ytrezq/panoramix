@@ -756,8 +756,8 @@ def div_op(a, b):
             a = mul_op(-1, a)
             b = -b
 
-        if to_exp2(b):
-            return mask_op(a, size=256 - to_exp2(b), shr=to_exp2(b))
+        if shift := to_exp2(b):
+            return mask_op(a, size=256 - shift, offset=shift, shr=shift)
 
     if type(a) != int or type(b) != int:
         #        return None
