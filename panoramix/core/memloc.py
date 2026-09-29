@@ -117,20 +117,11 @@ def split_or(value):
                 "caller",
             )  # does weird things if size == 1, in loops.activateSafeMode
 
-        if row == "block.timestamp":
-            row = (
-                "mask_shl",
-                64,
-                0,
-                0,
-                "caller",
-            )  # does weird things if size == 1, in loops.activateSafeMode
-
         if m := match(row, ("mul", 1, ":val")):
             row = m.val
 
         if opcode(row) == "mask_shl" and all_concrete(row):
-            row = apply_mask(row[4] if row[4] < 256 else 256, row[1], row[2], row[3])
+            row = apply_mask(row[4], row[1], row[2], row[3])
 
         if type(row) in [int, float]:
             size, offset = find_mask(row)
@@ -151,7 +142,7 @@ def split_or(value):
             continue
 
         if opcode(row) != "mask_shl":
-            return [(256, 0, value)]
+            return [(256, 0, orig_value)]
 
         assert opcode(row) == "mask_shl"
         _, size, offset, shl, value = row
@@ -231,7 +222,7 @@ def split_or(value):
 
     for r in ret_rows:
         if type(r[1]) != int or type(r[0]) != int:
-            return [(256, 0, value)]
+            return [(256, 0, orig_value)]
         if r[1] > pos:
             result.append((r[1] - pos, pos, 0))
 
