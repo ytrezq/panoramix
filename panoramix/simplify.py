@@ -341,6 +341,10 @@ def simplify_exp(exp):
     if m := match(exp, ("signextend", ":b", ":val")):
         exp = signextend_op(m.b, m.val)
 
+    if match(exp, ("mask_shl", Any, Any, Any, 0)):
+        # whatever its size and offset
+        return 0
+
     if opcode(exp) == "and":
         _, *terms = exp
         real = 2**256 - 1

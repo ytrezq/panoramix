@@ -964,7 +964,7 @@ def mask_op(exp, size=256, offset=0, shl=0, shr=0):
 
 
 def _mask_op(exp, size=256, offset=0, shl=0, shr=0):
-    if size == 0:
+    if size == 0 or exp == 0:
         return 0
     #    if (size, offset, shl, shr) == (256, 0, 0, 0):
     #        return exp
