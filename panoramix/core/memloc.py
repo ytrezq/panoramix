@@ -919,6 +919,13 @@ def slice_exp(exp, left, right, width=None):
             width = bits(exp[1])
         exp = exp[2]
 
+    if sized(exp) and opcode(exp) != "bytes":
+        w = width_of(exp)
+        if type(w) is not int or w > 256:
+            # bytes of more than a word (or of a width not known) cut where
+            # it's not known: not a number, to take bits of
+            return None
+
     if width is None:
         width = sizeof(exp)
 
