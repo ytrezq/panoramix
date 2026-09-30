@@ -16,7 +16,12 @@ from panoramix.utils.helpers import (
     padded_hex,
 )
 from panoramix.utils.opcode_dict import opcode_dict
-from panoramix.utils.signatures import fix_input_names, get_func_name, make_abi
+from panoramix.utils.signatures import (
+    canonical_type,
+    fix_input_names,
+    get_func_name,
+    make_abi,
+)
 from panoramix.utils.supplement import fetch_sig
 
 logger = logging.getLogger(__name__)
@@ -223,7 +228,15 @@ class Loader(EasyCopy):
             a["name"],
             ", ".join(
                 [
-                    colorize(x["type"], COLOR_GRAY, add_color) + " " + x["name"]
+                    # (a tuple as the types it's made of: its selector is the
+                    # hash of that, see canonical_type)
+                    colorize(
+                        canonical_type(x["type"], x.get("components")),
+                        COLOR_GRAY,
+                        add_color,
+                    )
+                    + " "
+                    + x["name"]
                     for x in a["inputs"]
                 ]
             ),

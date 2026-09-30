@@ -512,8 +512,13 @@ def pretty_line(r, add_color=True):
 
         inputs = fix_input_names(abi["inputs"])
         fname = abi["name"]
+        # (a tuple as the types it's made of: the signature is what's hashed)
         e = "{}({})".format(
-            fname, ", ".join(f"{i['type']} {i['name']}" for i in inputs)
+            fname,
+            ", ".join(
+                f"{canonical_type(i['type'], i.get('components'))} {i['name']}"
+                for i in inputs
+            ),
         )
 
         # the ones not indexed are in the data, the indexed ones are topics
@@ -526,7 +531,12 @@ def pretty_line(r, add_color=True):
 
         elif len(not_indexed) == len(data_params) and len(indexed) == len(topic_params):
             p_list = [
-                (i["type"] + (" indexed" if i.get("indexed") else ""), i["name"], p)
+                (
+                    canonical_type(i["type"], i.get("components"))
+                    + (" indexed" if i.get("indexed") else ""),
+                    i["name"],
+                    p,
+                )
                 for i, p in zip(in_log, res_params)
             ]
             # in the order of the declaration

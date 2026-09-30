@@ -93,6 +93,8 @@ how wide it is:
   the function checks it (`require _param1 == address(_param1)`), which
   proves the calldata held no more than that.
 - `call.func_hash` is the selector; `calldata.size` the size of the calldata.
+- A struct in a signature is the types it's made of, `(uint8,bytes32,bytes32)
+  sig`: the selector is the hash of the signature with them.
 - An external call prints its gas as the expression it is, its selector as
   the function it calls when that's known (`unknown1234abcd(?)` when it isn't:
   no params are made up), and then its params as a list of data. The address

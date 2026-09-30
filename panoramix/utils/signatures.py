@@ -213,7 +213,8 @@ def get_func_name(hash, add_color=False):
             a["name"],
             ", ".join(
                 [
-                    x["type"]
+                    # (a tuple as the types it's made of, see canonical_type)
+                    canonical_type(x["type"], x.get("components"))
                     + " "
                     + colorize(
                         x["name"],
