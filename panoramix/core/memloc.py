@@ -415,6 +415,66 @@ def sizeof(exp):  # returns size of expression in *bits*
     return None
 
 
+def byte_elements(exp):
+    """
+    The positions in exp of its elements of bytes: of a data, a sha3, an
+    array, and the data (or the one value) of a return, a revert, a log, the
+    params of a call... As many bytes as they're written (see sizeof), not
+    as they're worth: address(x) there is 20 bytes, x a word, whatever x is.
+    Not a setmem's value - it's as wide as the range it's written to.
+    """
+    op = opcode(exp)
+    if op in ("sha3", "data"):
+        return range(1, len(exp))
+    if op == "arr":
+        return range(2, len(exp))
+    positions = BYTES_OPERANDS.get(op, ())
+    return tuple(i for i in positions if i < len(exp) and exp[i] is not None)
+
+
+# the positions of the operands that are bytes, of the other operations
+BYTES_OPERANDS = {
+    "return": (1,),
+    "revert": (1,),
+    "log": (1,),
+    # the selector and the params
+    "call": (4, 5),
+    "staticcall": (4, 5),
+    "callcode": (4, 5),
+    "delegatecall": (3, 4),
+    # the code
+    "create": (2,),
+    "create2": (2,),
+    "precompiled": (3,),
+}
+
+
+def sized(exp):
+    """
+    Whether exp, as an element of bytes, says how many bytes it is - a data,
+    a Bytes(n, v), an ABI array, a range of memory or of calldata... - rather
+    than by how it's written (see sizeof).
+    """
+    op = opcode(exp)
+    return op in ("bytes", "data", "arr", "mem") or is_array(op)
+
+
+def keep_width(old, new):
+    """
+    new, that is worth what old is, where old is an element of bytes: as
+    wide as old is (address(x) is 20 bytes there, x - that's worth it once
+    x is known to be an address - a word).
+    """
+    if new == old or sized(old):
+        return new
+    width = sizeof(old)
+    if sub_op(sizeof(new), width) == 0:
+        return new
+    if type(width) == int and width > 0 and width % 8 == 0:
+        return ("bytes", width // 8, new)
+    return old
+
+
 def with_width(exp, size):
     """exp as the `size` bytes of memory it's in (see "bytes")."""
     if opcode(exp) == "bytes":

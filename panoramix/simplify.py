@@ -47,15 +47,18 @@ from panoramix.core.arithmetic import changed_reads, is_zero, to_real_int
 from panoramix.core.masks import get_bit, to_mask, to_neg_mask
 from panoramix.core.memloc import (
     apply_mask_to_range,
+    byte_elements,
     fill_mem,
     max_value,
     max_value_bits,
     memloc_overwrite,
     range_overlaps,
+    sized,
     sizeof,
     split_setmem,
     split_store,
     splits_mem,
+    value_bits,
 )
 from panoramix.matcher import Any, match
 from panoramix.prettify import (
@@ -244,40 +247,19 @@ def simplify_trace(trace, timeout=0):
     return trace
 
 
-# The operands that are bytes (see memloc, "bytes"): the rest are numbers.
-BYTES_OPERANDS = {
-    "data": None,  # all of them
-    "arr": range(2, 2**32),  # after the length
-    "sha3": None,
-    "return": (1,),
-    "revert": (1,),
-    "log": (1,),
-    "call": (4, 5),
-    "staticcall": (4, 5),
-    "callcode": (4, 5),
-    "delegatecall": (3, 4),
-    "create": (2,),
-    "create2": (2,),
-    "precompiled": (3,),
-}
-
-
 def unwrap_bytes(exp):
     """exp, with the operands that are numbers not wrapped in "bytes"."""
     op = opcode(exp)
     if op == "bytes":
         return exp
 
-    keep = BYTES_OPERANDS.get(op, ())
-    if keep is None:
-        return exp
-
     if not any(opcode(e) == "bytes" for e in exp[1:]):
         return exp
 
+    keep = byte_elements(exp)
     return (op,) + tuple(
-        e[2] if opcode(e) == "bytes" and idx + 1 not in keep else e
-        for idx, e in enumerate(exp[1:])
+        e[2] if opcode(e) == "bytes" and idx not in keep else e
+        for idx, e in enumerate(exp[1:], 1)
     )
 
 
@@ -321,8 +303,15 @@ def data_elements(res):
             if zeroes(e) is not None:
                 merged[-1] = ("bytes", (z + zeroes(e)) // 8, 0)
                 continue
-            if type(w) is int and w % 8 == 0 and opcode(merged[-1]) == "bytes":
-                inner = e[2] if opcode(e) == "bytes" else e
+            inner = e[2] if opcode(e) == "bytes" else e
+            if (
+                type(w) is int
+                and w % 8 == 0
+                and opcode(merged[-1]) == "bytes"
+                # the zeroes, then the low bytes of inner: its low bytes then
+                # only if there's nothing above them
+                and (sized(inner) or value_bits(inner) <= w)
+            ):
                 merged[-1] = ("bytes", (z + w) // 8, inner)
                 continue
         merged.append(e)
