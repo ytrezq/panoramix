@@ -520,6 +520,14 @@ def _sparser(orig_storages):
 
     storages = stor_replace_f(storages, simplify_sha3)
 
+    # the hash of a slot alone is where the data of the dynamic array (or
+    # bytes) starts, its element 0 - not the slot, which is its length
+    storages = [
+        ("stor", size, off, ("array", 0, idx)) if opcode(idx) == "loc" else s
+        for s in storages
+        for _, size, off, idx in [s]
+    ]
+
     """
         is add a struct or a loc?
     """
@@ -678,11 +686,15 @@ def _sparser(orig_storages):
             exp = m.exp  # remove 'add' with just one term. should be somewhere else
 
         if m := match(exp, ("sha3", ("map", ...))):
-            terms = exp[1][1:]
-            return (
-                "map",
-                *terms,
-            )  # this is sth weird, see 0xf97187f566eC6374cB08470CCe593fF0Dd36d8A9, transferFrom
+            # where the data of the dynamic array (or bytes) that is the
+            # value of the mapping starts: its element 0
+            dynamic_maps.add(exp[1])
+            return ("array", 0, exp[1])
+
+        if m := match(exp, ("add", ":idx", ("array", 0, ":base"))):
+            return ("array", m.idx, m.base)
+        if m := match(exp, ("add", ("array", 0, ":base"), ":idx")):
+            return ("array", m.idx, m.base)
         if m := match(exp, ("sha3", ":idx", ("map", ...))):
             terms = exp[2][1:]
             return ("map", m.idx, ("map", *terms))
@@ -719,7 +731,16 @@ def _sparser(orig_storages):
 
         return exp
 
+    # the values of mappings that are dynamic arrays (or bytes)
+    dynamic_maps = set()
     storages = replace_f(storages, double_map)
+
+    # the value itself is then the length
+    storages = [
+        ("stor", size, off, ("length", idx)) if idx in dynamic_maps else s
+        for s in storages
+        for _, size, off, idx in [s]
+    ]
 
     assert len(storages) == len(orig_storages)
 
