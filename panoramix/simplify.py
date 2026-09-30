@@ -614,12 +614,28 @@ def simplify_exp(exp):
     ):
         return apply_mask(m.val, m.size, m.offset, m.shl)
 
-    if (m := match(exp, ("mask_shl", ":size", 5, ":shl", ("add", 31, ":val")))) and (
-        match(m.val, ("mask_shl", 251, 0, 5, Any))
+    if (
+        (
+            m := match(
+                exp, ("mask_shl", ":size", ":int:off", ":shl", ("add", ":int:num", ...))
+            )
+        )
+        and 0 < m.num < 2**m.off
+        and all(low_zero_bits(t) >= m.off for t in exp[4][2:])
     ):
-        # the val is a multiple of 32: adding 31 doesn't change its bits above
-        # the 5 lowest (ceil32 of a multiple of 32 is the number)
-        return simplify_exp(("mask_shl", m.size, 5, m.shl, m.val))
+        # the other terms are multiples of 2**off: adding less than that
+        # doesn't change their bits from off up (ceil32 of a multiple of 32
+        # is the number)
+        return simplify_exp(("mask_shl", m.size, m.off, m.shl, add_op(*exp[4][2:])))
+
+    if (
+        (m := match(exp, ("mask_shl", ":int:size", ":int:off", 0, ":val")))
+        and m.size + m.off >= 256
+        and (opcode(m.val) in ("add", "mul"))
+        and low_zero_bits(m.val) >= m.off
+    ):
+        # the mask keeps all the bits of the word that may be set
+        return simplify_exp(m.val)
 
     if opcode(exp) == "mul":
         terms = exp[1:]
@@ -1296,6 +1312,24 @@ def apply_constraint(exp, constr):
         return replace_f(exp, f)
 
     return exp
+
+
+def low_zero_bits(exp):
+    """How many of the lowest bits of exp are known to be 0."""
+    if type(exp) == int:
+        exp %= 2**256
+        return 256 if exp == 0 else (exp & -exp).bit_length() - 1
+
+    if m := match(exp, ("mask_shl", Any, ":int:off", ":int:shl", Any)):
+        return max(0, m.off + m.shl)
+
+    if opcode(exp) == "mul":
+        return min(256, sum(low_zero_bits(e) for e in exp[1:]))
+
+    if opcode(exp) == "add":
+        return min(low_zero_bits(e) for e in exp[1:])
+
+    return 0
 
 
 def equals(x, c):
