@@ -1745,6 +1745,9 @@ def changes_reads(line, exp):
         "create2",
     ):
         return bool(changed_reads(exp, op))
+    if op == "precompiled":
+        # a call too: what calls return is what it returns
+        return bool(changed_reads(exp, "staticcall"))
     if op == "if":
         return any(changes_reads(l, exp) for l in line[2] + line[3])
     if op == "while":
