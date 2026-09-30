@@ -106,7 +106,7 @@ def clean_color(s):
 
 
 precompiled = {
-    1: "erecover",  # msg_hash =, v = , r = , s =
+    1: "ecrecover",  # msg_hash =, v = , r = , s =
     2: "sha256hash",
     3: "ripemd160hash",
     # 4: "memcpy", -- handled separately

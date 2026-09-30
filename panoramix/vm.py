@@ -316,6 +316,8 @@ class VM(EasyCopy):
         self.just_fdests = just_fdests
 
         self.counter = 0
+        # how many results of each precompile were named
+        self.precompile_results = {}
         self.known = ()
         self.should_quit = lambda: False
         global node_count
@@ -1540,12 +1542,21 @@ class VM(EasyCopy):
             stack.append("memcopy.success")
 
         elif type(addr) == int and addr in precompiled:
-            m = mem_load(arg_start, arg_len)
             args = mem_load(arg_start, arg_len)
-            var_name = precompiled_var_names[addr]
+
+            # a name for each result: signer, signer2...
+            base = precompiled_var_names[addr]
+            count = self.precompile_results.get(base, 0) + 1
+            self.precompile_results[base] = count
+            var_name = base if count == 1 else f"{base}{count}"
 
             trace(("precompiled", var_name, precompiled[addr], args))
-            trace(("setmem", ("range", ret_start, ret_len), ("var", var_name)))
+            if ret_len == 32:
+                trace(("setmem", ("range", ret_start, 32), ("var", var_name)))
+            elif ret_len != 0:
+                # more than a word (bn256Add...)
+                return_data = ("ext_call.return_data", 0, ret_len)
+                trace(("setmem", ("range", ret_start, ret_len), return_data))
 
             stack.append("{}.result".format(precompiled[addr]))
 
