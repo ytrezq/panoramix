@@ -376,6 +376,17 @@ def simplify_exp(exp):
     if (m := match(exp, ("eq", ":sth", 0))) or (m := match(exp, ("eq", 0, ":sth"))):
         exp = ("iszero", m.sth)
 
+    if m := match(exp, (":op", ("mul", -1, ":x"))):
+        if m.op in ("iszero", "bool"):
+            # -x is 0 when x is
+            exp = (m.op, m.x)
+
+    if (m := match(exp, ("iszero", ("add", ":int:c", ":x")))) and len(exp[1]) == 3:
+        exp = equals(m.x, m.c)
+
+    elif (m := match(exp, ("iszero", ":diff"))) and (eq := difference_eq(m.diff)):
+        exp = eq
+
     if (
         (m := match(exp, ("mask_shl", ":int:size", 5, 0, ("add", ":int:num", ...))))
         and m.size > 240
@@ -1286,6 +1297,45 @@ def apply_constraint(exp, constr):
     return exp
 
 
+def equals(x, c):
+    """c + x == 0, as a comparison."""
+    if m := match(x, ("mul", -1, ":y")):
+        return ("eq", m.y, c)
+
+    return ("eq", x, to_real_int(-c % 2**256))
+
+
+def difference_eq(exp):
+    """
+    a == b if exp is a - b (a sum with one term subtracted, and no constant),
+    None otherwise: the difference is 0 when they are equal.
+    """
+    if opcode(exp) != "add" or len(exp) < 3:
+        return None
+
+    terms = exp[1:]
+    negated = [t for t in terms if match(t, ("mul", -1, Any))]
+    if len(negated) != 1 or any(type(t) == int for t in terms):
+        return None
+
+    others = [t for t in terms if t is not negated[0]]
+    return ("eq", add_op(*others), negated[0][2])
+
+
+def truth(cond):
+    """A simpler condition that holds when cond isn't 0."""
+    if m := match(cond, ("mul", -1, ":x")):
+        return truth(m.x)
+
+    if (m := match(cond, ("add", ":int:c", ":x"))) and len(cond) == 3:
+        return is_zero(equals(m.x, m.c))
+
+    if eq := difference_eq(cond):
+        return is_zero(eq)
+
+    return cond
+
+
 def cleanup_conds(trace):
     """
 
@@ -1316,6 +1366,7 @@ def cleanup_conds(trace):
 
         elif opcode(line) == "if":
             _, cond, if_true, if_false = line
+            cond = truth(cond)
             if_true = cleanup_conds(if_true)
             if_false = cleanup_conds(if_false)
 
