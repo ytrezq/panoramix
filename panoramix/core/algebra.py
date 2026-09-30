@@ -128,10 +128,10 @@ def _cached_value_range(exp):
     return _value_range(exp, None)
 
 
-def _linear(exp, bounds):
+def _linear(exp, bounds, masks=True):
     """
     exp as a sum: ({term: coefficient}, constant, (lowest, highest) of a
-    number added to them)
+    number added to them). masks: floor32(x)... as x minus a number.
     """
     if type(exp) in (int, bool):
         return {}, int(exp), (0, 0)
@@ -140,7 +140,7 @@ def _linear(exp, bounds):
     if op == "add":
         terms, const, lo, hi = {}, 0, 0, 0
         for e in exp[1:]:
-            t, c, (d_lo, d_hi) = _linear(e, bounds)
+            t, c, (d_lo, d_hi) = _linear(e, bounds, masks)
             const, lo, hi = const + c, lo + d_lo, hi + d_hi
             for k, v in t.items():
                 terms[k] = terms.get(k, 0) + v
@@ -149,12 +149,13 @@ def _linear(exp, bounds):
     if op == "mul" and len(exp) >= 3 and type(exp[1]) is int:
         rest = exp[2] if len(exp) == 3 else ("mul",) + exp[2:]
         k = exp[1]
-        t, c, (d_lo, d_hi) = _linear(rest, bounds)
+        t, c, (d_lo, d_hi) = _linear(rest, bounds, masks)
         d = (k * d_lo, k * d_hi) if k >= 0 else (k * d_hi, k * d_lo)
         return {x: v * k for x, v in t.items()}, c * k, d
 
     if (
-        (m := match(exp, ("mask_shl", ":int:size", ":int:off", ":int:shl", ":x")))
+        masks
+        and (m := match(exp, ("mask_shl", ":int:size", ":int:off", ":int:shl", ":x")))
         and 0 < m.size
         and 0 <= m.off <= 16
         and 0 <= m.shl
@@ -175,7 +176,15 @@ def _linear(exp, bounds):
 
 
 def _value_range(exp, bounds):
-    terms, const, (lo, hi) = _linear(exp, bounds)
+    # (the masks as numbers minus others know sums such as ceil32(x) - x,
+    # as what they are that each of them is a word: both hold)
+    lo, hi = _sum_range(exp, bounds, True)
+    lo2, hi2 = _sum_range(exp, bounds, False)
+    return max(lo, lo2), min(hi, hi2)
+
+
+def _sum_range(exp, bounds, masks):
+    terms, const, (lo, hi) = _linear(exp, bounds, masks)
     lo, hi = lo + const, hi + const
     for t, c in terms.items():
         if c == 0:
