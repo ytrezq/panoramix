@@ -1016,7 +1016,7 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
             )
 
     if type(exp) == int and exp % (24 * 3600) == 0 and exp > 24 * 3600:
-        exp = ("mul", exp // 3600, 24, 3600)
+        exp = ("mul", exp // (24 * 3600), 24, 3600)
 
     if type(exp) == int and exp % 3600 == 0 and exp > 3600:
         exp = ("mul", exp // 3600, 3600)
