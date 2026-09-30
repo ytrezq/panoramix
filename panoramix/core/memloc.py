@@ -150,6 +150,9 @@ def max_value_bits(exp, bounds=None):
     if op in ("or", "xor") and len(exp) > 1:
         return max(bits(t) for t in exp[1:])
 
+    if op == "min" and len(exp) > 1:
+        return min(bits(t) for t in exp[1:])
+
     if m := match(exp, ("mask_shl", ":int:size", ":int:off", ":int:shl", ":x")):
         top = min(m.off + m.size, bits(m.x))
         if top <= m.off:

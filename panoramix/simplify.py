@@ -181,6 +181,9 @@ def simplify_trace(trace, timeout=0):
         trace = precompiled_results(trace)
         explain("results of precompiled contracts", trace)
 
+        trace = min_ifs(trace)
+        explain("minimums", trace)
+
         trace = rewrite_trace(trace, split_setmem)
         trace = rewrite_trace_full(trace, split_store)
         explain("split setmems & storages", trace)
@@ -1486,7 +1489,15 @@ def cond_bounds(cond):
         "ge": (b, top),
         "eq": (b, b),
     }[op]
-    return {a: (lo, hi)} if lo <= hi else {}
+    if lo > hi:
+        return {}
+    res = {a: (lo, hi)}
+    if opcode(a) == "min":
+        # (each of them is at least what the smaller one is)
+        for x in a[1:]:
+            if type(x) is not int:
+                res[x] = (lo, top)
+    return res
 
 
 def decide_le(a, b, bounds):
@@ -1758,6 +1769,41 @@ def overwrites_mem(line, mem_idx):
         return any(overwrites_mem(l, mem_idx) for l in line[2] + line[3])
 
     return False
+
+
+def min_ifs(trace):
+    """
+    `if a > b: v = b else: v = a` is `v = min(a, b)` - the size of what a
+    call returned that solc decodes, at most as much as it expects.
+    """
+    res = []
+    for line in trace:
+        if opcode(line) == "while":
+            line = ("while", line[1], min_ifs(line[2])) + tuple(line[3:])
+        elif opcode(line) == "if" and len(line) == 4:
+            _, cond, if_true, if_false = line
+            if_true, if_false = min_ifs(if_true), min_ifs(if_false)
+            line = ("if", cond, if_true, if_false)
+            if (
+                len(if_true) == 1
+                and len(if_false) == 1
+                and (mt := match(if_true[0], ("setvar", ":v", ":x")))
+                and (mf := match(if_false[0], ("setvar", ":v", ":y")))
+                and mt.v == mf.v
+            ):
+                x, y = mt.x, mf.y
+                while opcode(cond) == "iszero":
+                    cond, x, y = cond[1], y, x
+                op = opcode(cond)
+                if op in ("lt", "le", "gt", "ge") and len(cond) == 3:
+                    a, b = cond[1], cond[2]
+                    if op in ("gt", "ge"):
+                        a, b = b, a
+                    # v is x where a < b (a <= b), y where it isn't
+                    if (x, y) == (a, b):
+                        line = ("setvar", mt.v, ("min", a, b))
+        res.append(line)
+    return res
 
 
 def precompiled_results(trace, name=None):
@@ -2132,6 +2178,9 @@ def replace_mem(trace, mem_idx, mem_val):
         mem_val = arithmetic.eval(mem_val)
 
     res = []
+    # the variables set on the way, and to what: a condition on one of them
+    # is on what it was set to (see apply_constraint)
+    defined = {}
 
     for idx, line in enumerate(trace):
         if m := match(line, ("setmem", ":memloc", Any)):
@@ -2158,10 +2207,11 @@ def replace_mem(trace, mem_idx, mem_val):
         elif opcode(line) == "if":
             _, cond, if_true, if_false = line
             cond = replace_mem_exp(cond, mem_idx, mem_val)
-            mem_idx_true = apply_constraint(mem_idx, cond)
-            mem_val_true = apply_constraint(mem_val, cond)
-            mem_idx_false = apply_constraint(mem_idx, is_zero(cond))
-            mem_val_false = apply_constraint(mem_val, is_zero(cond))
+            known = replace_f(cond, lambda e: defined.get(e, e)) if defined else cond
+            mem_idx_true = apply_constraint(mem_idx, known)
+            mem_val_true = apply_constraint(mem_val, known)
+            mem_idx_false = apply_constraint(mem_idx, is_zero(known))
+            mem_val_false = apply_constraint(mem_val, is_zero(known))
 
             if_true = replace_mem(if_true, mem_idx_true, mem_val_true)
             if_false = replace_mem(if_false, mem_idx_false, mem_val_false)
@@ -2173,6 +2223,16 @@ def replace_mem(trace, mem_idx, mem_val):
                 # what comes after the if (if anything) is left alone
                 res.extend(copy(trace[idx + 1 :]))
                 return res
+
+            # what comes after is run after the branch that doesn't end the
+            # execution, if one does: where its condition holds (`require
+            # return_data.size > 31`, then the call wrote 32 bytes)
+            if trace_ends_execution(if_true) and not trace_ends_execution(if_false):
+                mem_idx, mem_val = mem_idx_false, mem_val_false
+            elif trace_ends_execution(if_false) and not trace_ends_execution(if_true):
+                mem_idx, mem_val = mem_idx_true, mem_val_true
+            mem_id = ("mem", mem_idx)
+            forget_vars(defined, assigned_vars(if_true + if_false))
 
         elif affects(line, mem_val) or affects(line, mem_id):
             if opcode(line) in ("call", "staticcall", "delegatecall", "callcode"):
@@ -2196,6 +2256,7 @@ def replace_mem(trace, mem_idx, mem_val):
                 path = replace_mem(path, mem_idx, mem_val)
 
             res.append(("while", cond, path, jds, vars))
+            defined.clear()
 
         else:
             # speed
@@ -2215,7 +2276,39 @@ def replace_mem(trace, mem_idx, mem_val):
 
             res.append(l)
 
+            if m := match(l, ("setvar", ":name", ":val")):
+                forget_vars(defined, [m.name])
+                if not contains(m.val, ("var", m.name)):
+                    defined[("var", m.name)] = m.val
+            for k, v in list(defined.items()):
+                if affects(l, v):
+                    del defined[k]
+
     return res
+
+
+def assigned_vars(trace):
+    """the names of the variables the trace sets"""
+    res = []
+    for line in trace:
+        if opcode(line) == "setvar":
+            res.append(line[1])
+        elif opcode(line) == "if" and len(line) == 4:
+            res += assigned_vars(line[2]) + assigned_vars(line[3])
+        elif opcode(line) == "while":
+            res += assigned_vars(line[2]) + [
+                v[1] for v in line[4] if opcode(v) == "setvar"
+            ]
+    return res
+
+
+def forget_vars(defined, names):
+    """what's known of the variables, once the ones named are set again"""
+    for name in names:
+        defined.pop(("var", name), None)
+        for k, v in list(defined.items()):
+            if contains(v, ("var", name)):
+                del defined[k]
 
 
 """
