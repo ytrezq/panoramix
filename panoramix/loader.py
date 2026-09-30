@@ -304,28 +304,31 @@ class Loader(EasyCopy):
             # find default
 
             def find_default(exp):
+                # (where it starts, the stack it starts with)
                 if (m := match(exp, ("if", ":cond", ":if_true", ":if_false"))) and str(
                     ("cd", 0)
                 ) in str(m.cond):
                     if find_f_list(m.if_false, func_calls) == []:
                         fi = m.if_false[0]
-                        if m2 := match(fi, ("jd", ":jd")):
-                            return int(m2.jd)
+                        if m2 := match(fi, ("jd", ":jd", ":stack")):
+                            return int(m2.jd), m2.stack
 
                     if find_f_list(m.if_true, func_calls) == []:
                         fi = m.if_true[0]
-                        if m2 := match(fi, ("jd", ":jd")):
-                            return int(m2.jd)
+                        if m2 := match(fi, ("jd", ":jd", ":stack")):
+                            return int(m2.jd), m2.stack
 
             default = find_f(trace, find_default) if func_list else None
-            self.add_func(default or 0, name="_fallback")
 
             if default:
+                target, stack = default
+                self.add_func(target, name="_fallback", stack=stack)
                 for entry, line in entry_paths(
-                    trace, lambda line: line == ("jd", str(default))
+                    trace, lambda line: opcode(line) == "jd" and line[1] == str(target)
                 ):
                     self.entries.setdefault("_fallback", []).append(entry)
             else:
+                self.add_func(0, name="_fallback")
                 self.entries["_fallback"] = [()]
 
         except Exception:

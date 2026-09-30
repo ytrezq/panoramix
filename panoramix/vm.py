@@ -220,12 +220,13 @@ class Node:
         if self.vm.just_fdests and (
             self.safe and self.vm.lines.get(self.start, (None, None))[1] == "jumpdest"
         ):
-            # the loader looks for these to find the default function
-            begin = [("jd", str(self.jd[0]))]
+            # the loader looks for these to find the default function, and
+            # the stack it starts with
+            begin = [("jd", str(self.jd[0]), tuple(self.stack))]
         elif self.vm.just_fdests and self.trace != [("revert", None)]:
             t = self.trace[0]
             if match(t, ("jump", ":target_node", ...)):
-                begin = [("jd", str(self.jd[0]))]  # , str(self.trace))]
+                begin = [("jd", str(self.jd[0]), tuple(self.stack))]
             else:
                 begin = ["?"]
         else:
