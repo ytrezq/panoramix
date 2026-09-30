@@ -983,6 +983,9 @@ def mask_mask_op(size, offset, shl, exp_size, exp_offset, exp_shl, exp):
 
 mask_dict = {}
 
+# the operations whose result is 0 or 1
+BOOL_OPS = ("bool", "iszero", "lt", "gt", "le", "ge", "eq", "slt", "sgt", "sle", "sge")
+
 
 def mask_op(exp, size=256, offset=0, shl=0, shr=0):
     if size == 0:
@@ -1008,6 +1011,13 @@ def _mask_op(exp, size=256, offset=0, shl=0, shr=0):
 
     shl = sub_op(shl, shr)
     shr = 0
+
+    if opcode(exp) in BOOL_OPS and all_concrete(size, offset, shl):
+        # 0 or 1: a mask keeps it as it is, or drops it
+        if offset > 0 or size <= 0:
+            return 0
+        if shl == 0:
+            return exp
 
     if (
         m := match(exp, ("storage", ":stor_size", ":int:stor_offset", ":stor_idx"))
