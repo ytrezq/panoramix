@@ -51,6 +51,47 @@ LOADER_TIMEOUT = 60
 """
 
 
+# what the instructions before solidity's first mstore do to the stack:
+# (popped, pushed) - a library checks its address
+STACK_EFFECTS = {
+    "address": (0, 1),
+    "eq": (2, 1),
+    "callvalue": (0, 1),
+    "calldatasize": (0, 1),
+    "lt": (2, 1),
+    "gt": (2, 1),
+    "iszero": (1, 1),
+}
+
+
+def sets_free_memory_pointer(parsed_lines):
+    """
+    Whether the code starts as solidity's does: its first mstore writes a
+    number of at least 0x60 at 0x40 - mstore(0x40, 0x80), 0x60 before
+    0.4.22, more for what some keep in memory -, the stack before it made
+    of pushes, dups and swaps (PUSH1 0x80 DUP1 PUSH1 0x40 MSTORE via IR).
+    Vyper's first mstore isn't at 0x40, or of a number there.
+    """
+    stack = []
+    for _, op, param in parsed_lines[:32]:
+        if op.startswith("push"):
+            stack.append(param or 0)
+        elif op.startswith("dup") and len(stack) >= int(op[3:]):
+            stack.append(stack[-int(op[3:])])
+        elif op.startswith("swap") and len(stack) > int(op[4:]):
+            n = int(op[4:])
+            stack[-1], stack[-1 - n] = stack[-1 - n], stack[-1]
+        elif op == "mstore" and len(stack) >= 2:
+            addr, value = stack[-1], stack[-2]
+            return addr == 0x40 and type(value) is int and 0x60 <= value < 2**16
+        elif op in STACK_EFFECTS and len(stack) >= STACK_EFFECTS[op][0]:
+            popped, pushed = STACK_EFFECTS[op]
+            stack = stack[: len(stack) - popped] + [None] * pushed
+        else:
+            return False
+    return False
+
+
 def is_marker(line):
     return type(line) is str or opcode(line) == "jd"
 
@@ -474,9 +515,6 @@ class Loader(EasyCopy):
         # solidity sets its free memory pointer, mem[64], before anything else
         # (but a library's check that it's called with a delegatecall): what
         # the memory model takes it for (see variants)
-        head = bytes(self.binary[:64])
-        set_free_memory_pointer(
-            b"\x60\x80\x60\x40\x52" in head or b"\x60\x60\x60\x40\x52" in head
-        )
+        set_free_memory_pointer(sets_free_memory_pointer(parsed_lines))
 
         return self.lines
