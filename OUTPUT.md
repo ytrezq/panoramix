@@ -107,8 +107,9 @@ how wide it is:
   bytes it gave for it left as it was.
 - `x = ecrecover(...) # precompiled` calls a precompiled contract
   (`ecrecover`, `sha256hash`, `identity`...) with that data: `x` is the
-  first word it returns (0 if none), `ecrecover.result` its success
-  (`memcopy.success` for `identity`), and `return_data.size` and
+  first word it returns (0 if none) - a name that's no other's (`signer_`
+  where a param or a storage variable is `signer`), `ecrecover.result` its
+  success (`memcopy.success` for `identity`), and `return_data.size` and
   `ext_call.return_data` are what it returned.
 
 ## Events

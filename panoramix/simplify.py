@@ -1839,8 +1839,9 @@ def precompiled_results(trace, name=None):
             else:
                 line = replace(line, first_word, ("var", name))
 
-        if m := match(line, ("precompiled", ":name", Any, Any)):
-            name = m.name if m.name != "memcopy" else None
+        if m := match(line, ("precompiled", ":name", ":func", Any)):
+            # (the data identity returns is the data it's given: read as that)
+            name = m.name if m.func != "identity" else None
         res.append(line)
     return res
 

@@ -1973,7 +1973,7 @@ class VM(EasyCopy):
             # room for is written (and it's what the next returndatacopy
             # copies)
             args = mem_load(arg_start, arg_len)
-            trace(("precompiled", "memcopy", "identity", args))
+            trace(("precompiled", "copied", "identity", args))
             if ret_len == arg_len:
                 size = ret_len
             elif type(ret_len) is int and type(arg_len) is int:

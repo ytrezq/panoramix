@@ -638,7 +638,7 @@ def pretty_line(r, add_color=True):
 
     elif m := match(r, ("precompiled", ":var_name", ":func_name", ":params")):
         yield "{} = {}({}) {}".format(
-            col(m.var_name, COLOR_BLUE),
+            col(var_name(m.var_name), COLOR_BLUE),
             m.func_name,
             ", ".join(pretty_memory(m.params, add_color=add_color)),
             COLOR_GRAY + "# precompiled" + ENDC,
@@ -1181,7 +1181,13 @@ BUILTIN_NAMES = frozenset(
         "eth",
         "mem",
         "stor",
+        "transient",
+        "msize",
+        "True",
+        "False",
     )
+    # (ecrecover.result...)
+    + tuple(precompiled.values())
 )
 
 _names = {"storage": frozenset(), "taken": BUILTIN_NAMES}
@@ -1196,6 +1202,18 @@ def set_names(storage=None, params=None):
     if storage is not None:
         _names["storage"] = frozenset(storage)
     _names["taken"] = BUILTIN_NAMES | _names["storage"] | frozenset(params or ())
+
+
+def var_name(name):
+    """
+    The name a variable with a name (the result of a precompiled contract,
+    `_3`...) is printed with: its own, then _ while that's the name of
+    something else - `signer_ = ecrecover(...)` where signer is a storage
+    variable or a param.
+    """
+    while name in _names["taken"]:
+        name += "_"
+    return name
 
 
 def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=False):
@@ -1480,7 +1498,7 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         return col(name, COLOR_BLUE)
 
     if m := match(exp, ("var", ":name")):
-        return col(str(m.name), COLOR_BLUE)
+        return col(var_name(str(m.name)), COLOR_BLUE)
 
     if m := match(exp, ("mem", ("range", ":loc", 32))):
         exp = ("mem", m.loc)
