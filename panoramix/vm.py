@@ -238,6 +238,21 @@ def write_memory(known, rng, value):
     return tuple(res) + (("memory", start, size, value),)
 
 
+def entry_memory(entries):
+    """
+    What's known of the memory when a function starts: what every path of
+    the dispatcher to it wrote, in a memory of zeroes (see loader.entry_paths).
+    """
+    res = None
+    for entry in entries or ():
+        known = (("memory_fresh",),)
+        for item in entry:
+            if opcode(item) == "setmem":
+                known = write_memory(known, item[1], item[2])
+        res = set(known) if res is None else res & set(known)
+    return tuple(sorted(res, key=str)) if res else ()
+
+
 def read_memory(known, addr):
     """The word at addr, if what's there is known, None otherwise."""
     if type(addr) != int or not any(opcode(f) in MEMORY_FACTS for f in known):
@@ -515,6 +530,7 @@ class VM(EasyCopy):
         timeout=0,
         known=(),
         entry=None,
+        memory=(),
     ):
         """
         `known` is a tuple of conditions known to hold when `start` is reached,
@@ -522,7 +538,8 @@ class VM(EasyCopy):
 
         `entry` is what runs before `start` (see loader.entry_paths), and
         goes at the beginning of the trace. If it isn't known, the free memory
-        pointer is assumed to be 0x60, as the old compilers set it.
+        pointer is assumed to be 0x60, as the old compilers set it. `memory`
+        is what's known of the memory then (see entry_memory).
         """
         time_start = time.monotonic()
 
@@ -540,6 +557,7 @@ class VM(EasyCopy):
             known = tuple(known) + entry_known(entry)
             if start == 0 and len(entry) == 0:
                 known += (("memory_fresh",),)
+            known += tuple(f for f in memory if f not in known)
 
         func_node = Node(
             vm=self, start=start, safe=True, stack=list(stack), known=tuple(known)

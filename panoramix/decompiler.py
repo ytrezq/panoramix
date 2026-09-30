@@ -14,7 +14,7 @@ from panoramix.function import Function
 from panoramix.loader import Loader
 from panoramix.prettify import explain, pprint_repr, pprint_trace
 from panoramix.storage import pretty_def
-from panoramix.vm import VM
+from panoramix.vm import VM, entry_memory
 from panoramix.whiles import make_whiles
 from panoramix.utils.helpers import C, rewrite_trace
 
@@ -174,6 +174,7 @@ def _decompile_with_loader(loader, only_func_name=None) -> Decompilation:
                     timeout=STEP_TIMEOUT,
                     known=known,
                     entry=loader.entry(hash),
+                    memory=entry_memory(loader.entries.get(hash)),
                 )
                 explain("Initial decompiled trace", trace)
 
