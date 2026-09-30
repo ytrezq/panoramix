@@ -1,3 +1,4 @@
+import itertools
 import logging
 import time
 import sys
@@ -439,6 +440,25 @@ def is_known(exp, known):
     return None
 
 
+# the numbers of the loops found (see loop_key)
+loop_keys = itertools.count(1)
+
+
+def loop_key(head):
+    """
+    What the variables of the loop that starts at the node head are numbered
+    after (see stack.fold_stacks): a number of its own, the same when it's
+    found again. Not the depth of a node in the tree - a loop in another can
+    start as deep as it: `for i... for j... if (j == i)` was `if i == i` -
+    nor where it starts in the code: a function with a loop called twice,
+    `(inner(a), inner(b))`, has the result of the first loop kept while the
+    second runs.
+    """
+    if getattr(head, "loop_key", None) is None:
+        head.loop_key = next(loop_keys)
+    return head.loop_key
+
+
 class Node:
     def __str__(self):
         return f"Node({self.jd})"
@@ -808,7 +828,9 @@ class VM(EasyCopy):
                 and len(node.history[node.jd].stack) == len(node.stack)
             ):  # jd[1] == stack_len
                 folded, vars = fold_stacks(
-                    node.history[node.jd].stack, node.stack, node.depth
+                    node.history[node.jd].stack,
+                    node.stack,
+                    loop_key(node.history[node.jd]),
                 )
                 loop_line = (
                     "loop",
@@ -863,8 +885,9 @@ class VM(EasyCopy):
                     set_vars.append(sv)
 
                 if not set_vars:
+                    # (a loop of its own, from loop_dest: see set_label)
                     folded, var_list = fold_stacks(
-                        old_stack, stack, loop_dest.label.depth
+                        old_stack, stack, loop_key(loop_dest)
                     )
                     if var_list:
                         node.trace = None
@@ -892,7 +915,7 @@ class VM(EasyCopy):
                     # The loop gets explored again, with a variable there too.
                     first = loop_dest.label
                     folded, var_list = stack_vars(
-                        first.stack, var_positions | changed, loop_dest.depth
+                        first.stack, var_positions | changed, loop_key(first)
                     )
                     loop_dest.trace = None
                     loop_dest.next = []

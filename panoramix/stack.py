@@ -24,6 +24,9 @@ def fold_stacks(self, latter, depth):
 
     It then returns a stack that has variables in it instead of values.
 
+    `depth`: what tells the loop from the others (see vm.loop_key), the
+    variables are numbered after.
+
     """
     assert len(self) == len(latter), (self, latter)
     vars = []
