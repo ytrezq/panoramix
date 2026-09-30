@@ -1489,7 +1489,7 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         return wrap(res, ADD)
 
     if opcode(exp) == "not":
-        return wrap(COLOR_BOLD + "!" + ENDC + operand(exp[1], UNARY), UNARY)
+        return wrap(col("!", COLOR_BOLD) + operand(exp[1], UNARY), UNARY)
 
     if opcode(exp) == "add":
         return pretty_adds(exp)
