@@ -5,7 +5,7 @@ import panoramix.core.arithmetic as arithmetic
 from panoramix.core.algebra import mask_op, neg_mask_op
 from panoramix.core.masks import to_mask, to_neg_mask
 from panoramix.prettify import prettify
-from panoramix.utils.helpers import EasyCopy, opcode, to_exp2
+from panoramix.utils.helpers import CACHES, EasyCopy, opcode, to_exp2
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +146,7 @@ class Stack(EasyCopy):
         return res
 
     simplify_cache = {}
+    CACHES.append(simplify_cache)
 
     @staticmethod
     def simplify(exp):

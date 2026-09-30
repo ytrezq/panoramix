@@ -20,7 +20,14 @@ import logging
 
 from panoramix.core.variants import extract_variables, variants
 from panoramix.matcher import Any, match
-from panoramix.utils.helpers import EasyCopy, all_concrete, cached, opcode, to_exp2
+from panoramix.utils.helpers import (
+    CACHES,
+    EasyCopy,
+    all_concrete,
+    cached,
+    opcode,
+    to_exp2,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -753,6 +760,7 @@ assert to_bytes(
 
 
 ge_zero_cache = {}
+CACHES.append(ge_zero_cache)
 
 
 def ge_zero(exp):

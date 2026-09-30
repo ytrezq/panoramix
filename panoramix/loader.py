@@ -5,6 +5,7 @@ import os.path
 import traceback
 
 from panoramix.core.arithmetic import is_zero
+from panoramix.core.variants import set_free_memory_pointer
 from panoramix.matcher import Any, match
 from panoramix.utils.helpers import (
     COLOR_GRAY,
@@ -469,5 +470,13 @@ class Loader(EasyCopy):
                 op = "swap"
 
             self.lines[line_no] = (line_no, op, param)
+
+        # solidity sets its free memory pointer, mem[64], before anything else
+        # (but a library's check that it's called with a delegatecall): what
+        # the memory model takes it for (see variants)
+        head = bytes(self.binary[:64])
+        set_free_memory_pointer(
+            b"\x60\x80\x60\x40\x52" in head or b"\x60\x60\x60\x40\x52" in head
+        )
 
         return self.lines

@@ -4,7 +4,7 @@ import time
 import sys
 from copy import copy
 
-from panoramix.core import arithmetic
+from panoramix.core import arithmetic, variants
 import panoramix.utils.opcode_dict as opcode_dict
 from panoramix.core.algebra import (
     add_op,
@@ -703,7 +703,11 @@ class VM(EasyCopy):
         self.should_quit = should_quit
 
         if entry is None:
-            before = [("setmem", ("range", 0x40, 32), 0x60)]
+            before = (
+                [("setmem", ("range", 0x40, 32), 0x60)]
+                if variants.FREE_MEMORY_POINTER
+                else []
+            )
         else:
             before = []
             known = tuple(known) + entry_known(entry)

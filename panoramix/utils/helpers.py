@@ -146,8 +146,23 @@ def exp_size(exp):
     return 1
 
 
+# the caches of the cached functions, and the other ones registered: see
+# clear_caches
+CACHES = []
+
+
+def clear_caches():
+    """
+    Forget what was computed and cached: when what it rests on changes (see
+    variants.set_free_memory_pointer).
+    """
+    for cache in CACHES:
+        cache.clear()
+
+
 def cached(func):
     cache = {}
+    CACHES.append(cache)
 
     def wrapper(*args, **kwargs):
         key = args + tuple(kwargs.items())

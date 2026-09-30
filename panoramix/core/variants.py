@@ -1,4 +1,4 @@
-from panoramix.utils.helpers import is_array, opcode
+from panoramix.utils.helpers import clear_caches, is_array, opcode
 
 """
 
@@ -16,6 +16,20 @@ from panoramix.utils.helpers import is_array, opcode
 
 MAX_number = 2**230 - 1
 MAX_number2 = 2**230 - 1
+
+# Whether mem[64] is the free memory pointer of solidity, which it sets to
+# 0x80 (0x60 before 0.4.22) before anything else: then it's at least 0x60
+# (see Loader.load_binary). Vyper's mem[64] is a word like another, a length
+# say.
+FREE_MEMORY_POINTER = True
+
+
+def set_free_memory_pointer(on):
+    global FREE_MEMORY_POINTER
+    if on != FREE_MEMORY_POINTER:
+        FREE_MEMORY_POINTER = on
+        # (what was decided with the other assumption)
+        clear_caches()
 
 
 def variants(exp):
@@ -80,7 +94,7 @@ def possibilities(var):
             yield {current: MAX_number}
             yield {current: MAX_number2}
 
-            if current == ("mem", ("range", 64, 32)):
+            if current == ("mem", ("range", 64, 32)) and FREE_MEMORY_POINTER:
                 yield {current: 96}
             else:
                 # (calldatasize too: a call has 0 to 3 bytes of data, the
@@ -94,7 +108,7 @@ def possibilities(var):
                 p[current] = MAX_number2
                 yield p
 
-                if current == ("mem", ("range", 64, 32)):
+                if current == ("mem", ("range", 64, 32)) and FREE_MEMORY_POINTER:
                     p[current] = 96
                 else:
                     p[current] = 0
