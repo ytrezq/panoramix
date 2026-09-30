@@ -60,6 +60,40 @@ def mask_to_int(size, offset):
     return (2**size - 1) * (2**offset)
 
 
+def may_be_wide(exp):
+    """
+    True if exp may have more than 256 bits: a value from memory can be
+    longer than a word (a string, the arguments of a call), and a mask of
+    256 bits of it doesn't leave it as it is.
+    """
+    if type(exp) == int:
+        return exp >= 2**256
+
+    op = opcode(exp)
+    if op == "data":
+        return True
+
+    if op == "bytes":
+        return not (type(exp[1]) == int and exp[1] <= 32)
+
+    if op == "mem" or op in (
+        "call.data",
+        "code.data",
+        "ext_call.return_data",
+        "delegate.return_data",
+        "callcode.return_data",
+        "staticcall.return_data",
+    ):
+        if op == "mem":
+            rng = exp[1]
+            length = rng[2] if opcode(rng) == "range" and len(rng) == 3 else None
+        else:
+            length = exp[2] if len(exp) == 3 else None
+        return not (type(length) == int and length <= 32)
+
+    return False
+
+
 @cached
 def simplify(exp):
     if opcode(exp) == "max":
@@ -84,7 +118,7 @@ def simplify(exp):
         if all_concrete(size, offset, shl, val):
             return apply_mask(val, size, offset, shl)
 
-        if (size, offset, shl) == (256, 0, 0):
+        if (size, offset, shl) == (256, 0, 0) and not may_be_wide(val):
             return val
 
     if opcode(exp) == "add":

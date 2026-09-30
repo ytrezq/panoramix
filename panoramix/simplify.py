@@ -23,6 +23,7 @@ from panoramix.core.algebra import (
     mask_op,
     max_op,
     max_to_add,
+    may_be_wide,
     min_op,
     minus_op,
     mul_op,
@@ -455,7 +456,7 @@ def simplify_exp(exp):
     if m := match(exp, ("div", ":e", 1)):
         return simplify_exp(m.e)
 
-    if m := match(exp, ("mask_shl", 256, 0, 0, ":val")):
+    if (m := match(exp, ("mask_shl", 256, 0, 0, ":val"))) and not may_be_wide(m.val):
         return simplify_exp(m.val)
 
     if m := match(exp, ("mask_shl", ":int:size", ":int:offset", ":int:shl", ":e")):

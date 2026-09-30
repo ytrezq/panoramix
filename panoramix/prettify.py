@@ -20,6 +20,7 @@ from panoramix.core.algebra import (
     apply_mask,
     ge_zero,
     lt_op,
+    may_be_wide,
     minus_op,
     mul_op,
     safe_ge_zero,
@@ -1397,10 +1398,10 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
     if m := match(exp, ("mask", ":size", 0, ":val")):
         size, val = m.size, m.val
 
-        if size == 256:
+        if size == 256 and not may_be_wide(val):
             return pret(val, parentheses=ctx)
 
-        if type(size) == int:
+        if type(size) == int and size != 256:
             if size == 255:
                 type_name = "uint255"
             else:
