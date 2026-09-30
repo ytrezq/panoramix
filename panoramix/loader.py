@@ -65,13 +65,16 @@ def reverts(trace):
 
 
 def is_dispatch(cond):
-    """A condition on the selector, or on calldatasize being at least 4."""
+    """
+    A condition on the selector, or on calldatasize being at least 4 (solc:
+    calldatasize < 4, Vyper: calldatasize > 3).
+    """
     s = str(cond)
     if str(("cd", 0)) in s:
         return True
 
     leaves = set(find_f_list(cond, lambda e: [e] if type(e) in (int, str) else []))
-    return leaves <= {"calldatasize", 4, "lt", "gt", "le", "ge", "iszero", "bool"}
+    return leaves <= {"calldatasize", 3, 4, "lt", "gt", "le", "ge", "iszero", "bool"}
 
 
 def selector_test(cond):
