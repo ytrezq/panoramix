@@ -2039,9 +2039,14 @@ def cleanup_vars(trace, required_after=None):
 
         elif opcode(line) == "while":
             _, cond, path, *rest = line
+            # the next iteration may use what this one sets: the condition
+            # is evaluated again, and the body runs again from its start
             path = cleanup_vars(
                 path,
-                required_after=required_after + find_op_list(trace[idx + 1 :], "var"),
+                required_after=required_after
+                + find_op_list(trace[idx + 1 :], "var")
+                + find_op_list(cond, "var")
+                + find_op_list(path, "var"),
             )
             res.append(
                 (
@@ -2092,6 +2097,15 @@ def cleanup_vars(trace, required_after=None):
     return res
 
 
+def sets_var(trace, var_idx):
+    """True if the trace (or a loop in it) sets the var."""
+
+    def is_set(exp):
+        return [exp] if match(exp, ("setvar", var_idx, Any)) else []
+
+    return bool(find_f_list(trace, is_set))
+
+
 def replace_var(trace, var_idx, var_val):
     """
     replace occurences of var, if possible
@@ -2118,9 +2132,14 @@ def replace_var(trace, var_idx, var_val):
             _, cond, path, jd, setvars = line
             setvars = replace(setvars, var_id, var_val)
 
-            if not affects(
-                line, var_val
-            ):  # and not find_f(path, lambda e: e ~ ('setvar', var_idx, _)):
+            if sets_var(path, var_idx):
+                # the loop sets the var again: it has the value only until
+                # then, not in the next iterations, nor after the loop
+                res.append(("while", cond, path, jd, setvars))
+                res.extend(copy(trace[idx + 1 :]))
+                return res
+
+            if not affects(line, var_val):
                 cond = replace(cond, var_id, var_val)
                 path = replace_var(path, var_idx, var_val)
 
