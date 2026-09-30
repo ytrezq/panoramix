@@ -45,7 +45,9 @@ comparisons, `|`, `^`, `&`, `<< >>`, `+ -`, `* / %`, unary `-`, `**`.
   name: `loop2: while ...` ... `continue loop2`.
 - `x = ...` for a name that isn't a storage variable is a local variable.
 - `mem[a]` is the word of memory at `a`, `mem[a len n]` its `n` bytes at `a`;
-  `mem[a len n] = v` with `v` a number writes its low `n` bytes.
+  `mem[a len n] = v` with `v` a number writes its low `n` bytes (zeroes
+  above its word), with a list of data (`mem[a] = Bytes(12, 0), mem[b len
+  20]`, see Data) those `n` bytes.
 
 ## Data
 
@@ -54,7 +56,8 @@ of a call, a `concat(...)` or `Array(...)` holds - is the bytes of its
 elements, one after the other. An element is a 32-byte word, unless it says
 how wide it is:
 
-- `Bytes(n, v)`: the low `n` bytes of `v`;
+- `Bytes(n, v)`: the low `n` bytes of the number `v` (zeroes above its
+  word) - of bytes `v` (a range, a string...), they're `n` bytes;
 - `mem[a len n]`, `call.data[a len n]`, `ext_call.return_data[a len n]`...:
   those `n` bytes;
 - `'text'`: its bytes - but when it's all the data is (after a 4-byte

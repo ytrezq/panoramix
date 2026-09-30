@@ -6,7 +6,7 @@
 
 """
 from panoramix.core.algebra import minus_op
-from panoramix.utils.helpers import opcode
+from panoramix.utils.helpers import keep_widths, opcode
 from panoramix.matcher import match
 
 
@@ -69,7 +69,7 @@ def cleanup_mul_1(trace):
                 assert len(exp) > 3, exp
                 return ("mul",) + tuple(cleanup_exp(x) for x in exp[2:])
 
-        return tuple(cleanup_exp(x) for x in exp)
+        return keep_widths(exp, tuple(cleanup_exp(x) for x in exp))
 
     res = []
 

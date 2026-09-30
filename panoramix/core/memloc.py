@@ -480,24 +480,123 @@ def sized(exp):
     return op in ("bytes", "data", "arr", "mem", "sall") or is_array(op)
 
 
+def width_of(exp):
+    """
+    The bits exp is as an element of bytes (see sizeof), None if unknown -
+    an ABI-encoded array in it, whose offset goes before the rest.
+    """
+    if opcode(exp) == "arr" or (
+        opcode(exp) == "data" and any(width_of(e) is None for e in exp[1:])
+    ):
+        return None
+    try:
+        return sizeof(exp)
+    except AssertionError:
+        return None
+
+
+def implicit(exp, width):
+    """
+    Whether exp, as `width` bits of bytes, needs no ("bytes", ...) to say how
+    wide it is: it's a word, or it says how many bytes it is (a range...).
+    Otherwise its width goes with it: a rewrite of a value keeps what it's
+    worth, not how it's written - address(x) is 20 bytes, x once it's known
+    to be an address a word.
+    """
+    if sized(exp):
+        w = width_of(exp)
+        return w is None or sub_op(w, width) == 0
+    return width == 256 and width_of(exp) == 256
+
+
 def keep_width(old, new):
     """
     new, that is worth what old is, where old is an element of bytes: as
-    wide as old is (address(x) is 20 bytes there, x - that's worth it once
-    x is known to be an address - a word).
+    wide as old is. What says how many bytes it is (a range, a "bytes"...)
+    is as it's rewritten; a number that isn't a word says it.
     """
-    if new == old or sized(old):
+    if new == old or sized(new):
         return new
-    width = sizeof(old)
-    if sub_op(sizeof(new), width) == 0:
+    width = width_of(old)
+    if width is None or (width == 256 and width_of(new) == 256):
         return new
     if type(width) == int and width > 0 and width % 8 == 0:
+        # the value, as that many bytes
         return ("bytes", width // 8, new)
     return old
 
 
+def keep_widths(old, new):
+    """
+    new, the operation old is with its operands rewritten, with the ones
+    that are bytes as wide as they were - and the value of a write to memory
+    as wide as the range it's written to.
+    """
+    if (
+        type(old) is not tuple
+        or type(new) is not tuple
+        or new == old
+        or len(old) != len(new)
+        or opcode(old) != opcode(new)
+    ):
+        return new
+    res = list(new)
+    for i in byte_elements(new):
+        if res[i] != old[i]:
+            res[i] = keep_width(old[i], res[i])
+    if opcode(new) == "setmem" and len(new) == 3 and opcode(new[1]) == "range":
+        res[2] = keep_setmem_width(new[1][2], old[2], res[2])
+    return tuple(res)
+
+
+def keep_setmem_width(length, old, new):
+    """
+    new, that is worth what old is, written to `length` bytes of memory: a
+    number takes that many bytes; what says how many bytes it is must be as
+    many - or, bytes of another width, the number they make: fewer of them
+    as that many bytes (see with_width), more their last bytes.
+    """
+    if new == old or not sized(new):
+        return new
+    width = width_of(new)
+    if type(width) is not int or type(length) is not int or width == 8 * length:
+        # (as many, or not known: as it's rewritten)
+        return new
+    if width > 8 * length and (res := resize_bytes(new, length)) is not None:
+        return res
+    if 0 < length <= 32 and 0 < width <= 256 and opcode(new) != "data":
+        return ("bytes", length, new)
+    return old
+
+
+def resize_bytes(exp, size):
+    """
+    exp, bytes of a known width, as the number they make written to `size`
+    bytes - Bytes(size, exp) - without a "bytes" of bytes of another width:
+    zeroes before them, or their last `size` bytes. None if they can't be
+    cut there.
+    """
+    width = width_of(exp)
+    if type(width) is not int or type(size) is not int or width % 8:
+        return None
+    width //= 8
+    if width == size:
+        return exp
+    if width < size:
+        parts = exp[1:] if opcode(exp) == "data" else (exp,)
+        return ("data", ("bytes", size - width, 0)) + parts
+    res = slice_exp(exp, width - size, width)
+    if res is None or (opcode(res) == "bytes" and sized(res[2])):
+        return None
+    return res
+
+
 def with_width(exp, size):
-    """exp as the `size` bytes of memory it's in (see "bytes")."""
+    """
+    exp as the `size` bytes of memory it's in (see "bytes"): the number it
+    is, as that many bytes - of bytes of another width, the number they
+    make (see resize_bytes for them as bytes).
+    """
     if opcode(exp) == "bytes":
         exp = exp[2]
 
@@ -505,7 +604,7 @@ def with_width(exp, size):
         # a number, and as such a word
         exp = apply_mask(exp[4], exp[1], exp[2], exp[3])
 
-    if sub_op(sizeof(exp), bits(size)) == 0:
+    if implicit(exp, bits(size)):
         return exp
 
     return ("bytes", size, exp)
@@ -749,6 +848,26 @@ def slice_exp(exp, left, right, width=None):
     logger.debug("slicing %s, offset %i bytes, until %i bytes", exp, left, right)
     # e.g. mem[32 len 10], 2, 4 == mem[34,2]
 
+    if opcode(exp) == "bytes" and sized(exp[2]):
+        # bytes, as the number they make (see with_width)
+        if width is None:
+            width = bits(exp[1])
+        exp = exp[2]
+
+    if (
+        sized(exp)
+        and opcode(exp) != "bytes"
+        and type(width) is int
+        and (w := width_of(exp)) != width
+    ):
+        # bytes in memory of another width: the number they make there -
+        # zeroes and them, or their last bytes (see keep_setmem_width)
+        if type(w) is not int or width % 8:
+            return None
+        exp = resize_bytes(exp, width // 8)
+        if exp is None:
+            return None
+
     if m := match(exp, ("mem", ("range", ":rleft", ":rlen"))):
         rleft, rlen = m.rleft, m.rlen
         if safe_le_op(add_op(left, size), rlen):
@@ -804,26 +923,21 @@ def slice_exp(exp, left, right, width=None):
 
 
 assert slice_exp(("mem", ("range", 32, 10)), 2, 4) == ("mem", ("range", 34, 2))
+# (a part that isn't a word says how many bytes it is)
 assert slice_exp(("mask_shl", 32, 0, 0, ("cd", 0)), 0, 4) == (
-    "mask_shl",
-    32,
-    0,
-    0,
-    ("cd", 0),
+    "bytes",
+    4,
+    ("mask_shl", 32, 0, 0, ("cd", 0)),
 )
 assert slice_exp(("mask_shl", 32, 0, 0, ("cd", 0)), 2, 4) == (
-    "mask_shl",
-    16,
-    0,
-    0,
-    ("cd", 0),
+    "bytes",
+    2,
+    ("mask_shl", 16, 0, 0, ("cd", 0)),
 )
 assert slice_exp(("mask_shl", 32, 0, 0, ("cd", 0)), 0, 2) == (
-    "mask_shl",
-    16,
-    16,
-    -16,
-    ("cd", 0),
+    "bytes",
+    2,
+    ("mask_shl", 16, 16, -16, ("cd", 0)),
 )
 
 
@@ -900,20 +1014,17 @@ def splits_mem(memloc, split, memval, split_val=None):
             center_val = (opcode(split_val), center_offset, center_len)
 
         else:
-            center_offset = sub_op(s_right, center_right)
-            if opcode(split_val) == "bytes":
-                split_val = split_val[2]
-            center_val = mask_op(
+            # its bytes there, of the split_val the split's s_len bytes are
+            center_val = slice_exp(
                 split_val,
-                size=mul_op(center_len, 8),
-                offset=mul_op(center_offset, 8),
-                shr=mul_op(center_offset, 8),
+                sub_op(center_left, s_left),
+                sub_op(center_right, s_left),
+                width=bits(s_len),
             )
-            center_val = with_width(center_val, center_len)
 
         center_range = ("range", center_left, center_len)
 
-        if safe_ge_zero(center_len) and center_len != 0:
+        if safe_ge_zero(center_len) and center_len != 0 and center_val is not None:
             res.append((center_range, center_val))
 
     if safe_ge_zero(right_len) is True and right_len != 0 and val_right is not None:
@@ -922,26 +1033,27 @@ def splits_mem(memloc, split, memval, split_val=None):
     return res
 
 
+# (the bytes of a word left: as many bytes as they are)
 assert splits_mem(("range", 66, 32), ("range", 65, 32), "a") == [
-    (("range", 97, 1), ("mask_shl", 8, 0, 0, "a"))
+    (("range", 97, 1), ("bytes", 1, ("mask_shl", 8, 0, 0, "a")))
 ], splits_mem(("range", 66, 32), ("range", 65, 32), "a")
 assert splits_mem(("range", 64, 32), ("range", 65, 32), "a") == [
-    (("range", 64, 1), ("mask_shl", 8, 248, -248, "a"))
+    (("range", 64, 1), ("bytes", 1, ("mask_shl", 8, 248, -248, "a")))
 ], splits_mem(("range", 64, 32), ("range", 65, 32), "a")
 assert splits_mem(("range", 4, 32), ("range", 65, 32), "a") == [(("range", 4, 32), "a")]
 assert splits_mem(("range", 104, 32), ("range", 65, 32), "a") == [
     (("range", 104, 32), "a")
 ]
 assert splits_mem(("range", 64, 32), ("range", 65, 30), "a") == [
-    (("range", 64, 1), ("mask_shl", 8, 248, -248, "a")),
-    (("range", 95, 1), ("mask_shl", 8, 0, 0, "a")),
+    (("range", 64, 1), ("bytes", 1, ("mask_shl", 8, 248, -248, "a"))),
+    (("range", 95, 1), ("bytes", 1, ("mask_shl", 8, 0, 0, "a"))),
 ]
 
 assert (
     splits_mem(("range", 64, 32), ("range", "x", 32), "a") == []
 )  # not sure means return empty
 assert splits_mem(("range", 64, 32), ("range", 65, "x"), "a") == [
-    (("range", 64, 1), ("mask_shl", 8, 248, -248, "a"))
+    (("range", 64, 1), ("bytes", 1, ("mask_shl", 8, 248, -248, "a")))
 ]
 assert (
     splits_mem(("range", 64, "x"), ("range", 65, sub_op("x", 2)), "a") == []
@@ -950,20 +1062,20 @@ assert (
 )  # because it's either '1' if x>=1 or '0' if x == 0
 
 assert splits_mem(("range", 64, 32), ("range", 65, 30), "a", "b") == [
-    (("range", 64, 1), ("mask_shl", 8, 248, -248, "a")),
-    (("range", 65, 30), ("mask_shl", 240, 0, 0, "b")),
-    (("range", 95, 1), ("mask_shl", 8, 0, 0, "a")),
+    (("range", 64, 1), ("bytes", 1, ("mask_shl", 8, 248, -248, "a"))),
+    (("range", 65, 30), ("bytes", 30, ("mask_shl", 240, 0, 0, "b"))),
+    (("range", 95, 1), ("bytes", 1, ("mask_shl", 8, 0, 0, "a"))),
 ]
 
 assert splits_mem(("range", "x", 32), ("range", "y", 32), "a", "b") == []
 
 assert splits_mem(("range", 64, 32), ("range", 65, 32), "a", "b") == [
-    (("range", 64, 1), ("mask_shl", 8, 248, -248, "a")),
-    (("range", 65, 31), ("mask_shl", 248, 8, -8, "b")),
+    (("range", 64, 1), ("bytes", 1, ("mask_shl", 8, 248, -248, "a"))),
+    (("range", 65, 31), ("bytes", 31, ("mask_shl", 248, 8, -8, "b"))),
 ]
 assert splits_mem(("range", 64, 32), ("range", 63, 32), "a", "b") == [
-    (("range", 64, 31), ("mask_shl", 248, 0, 0, "b")),
-    (("range", 95, 1), ("mask_shl", 8, 0, 0, "a")),
+    (("range", 64, 31), ("bytes", 31, ("mask_shl", 248, 0, 0, "b"))),
+    (("range", 95, 1), ("bytes", 1, ("mask_shl", 8, 0, 0, "a"))),
 ]
 assert splits_mem(("range", 64, 32), ("range", 630, 32), "a", "b") == [
     (("range", 64, 32), "a")

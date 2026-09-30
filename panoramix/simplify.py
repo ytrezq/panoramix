@@ -49,10 +49,14 @@ from panoramix.core.memloc import (
     apply_mask_to_range,
     byte_elements,
     fill_mem,
+    implicit,
+    keep_width,
+    keep_widths,
     max_value,
     max_value_bits,
     memloc_overwrite,
     range_overlaps,
+    resize_bytes,
     sized,
     sizeof,
     split_setmem,
@@ -248,7 +252,11 @@ def simplify_trace(trace, timeout=0):
 
 
 def unwrap_bytes(exp):
-    """exp, with the operands that are numbers not wrapped in "bytes"."""
+    """
+    exp, with the operands that are numbers not wrapped in "bytes", and the
+    ones that are bytes not Bytes(n, v) of v bytes of another width than n
+    (see memloc.resize_bytes).
+    """
     op = opcode(exp)
     if op == "bytes":
         return exp
@@ -257,10 +265,29 @@ def unwrap_bytes(exp):
         return exp
 
     keep = byte_elements(exp)
-    return (op,) + tuple(
-        e[2] if opcode(e) == "bytes" and idx not in keep else e
-        for idx, e in enumerate(exp[1:], 1)
-    )
+
+    def unwrap(idx, e):
+        if opcode(e) != "bytes":
+            return e
+        if idx in keep:
+            return as_bytes(e)
+        if op == "setmem" and idx == 2 and sized(e[2]):
+            # bytes of another width than the memory written: the number
+            # they make (see memloc.keep_setmem_width)
+            return e
+        return e[2]
+
+    return (op,) + tuple(unwrap(idx, e) for idx, e in enumerate(exp[1:], 1))
+
+
+def as_bytes(e):
+    """
+    e, a ("bytes", n, v) where it's bytes: v, when it's bytes of another
+    width than n, as zeroes and v or its last n bytes.
+    """
+    if sized(e[2]) and (res := resize_bytes(e[2], e[1])) is not None:
+        return res
+    return e
 
 
 def simplify_bytes(exp):
@@ -272,7 +299,7 @@ def simplify_bytes(exp):
     ) is True:
         val = m.inner
 
-    if val != 0 and sub_op(sizeof(val), bits(size)) == 0:
+    if val != 0 and implicit(val, bits(size)):
         return val
 
     return ("bytes", size, val)
@@ -284,7 +311,7 @@ def data_elements(res):
     value, zeroes followed by a value merged into it, and zeroes into one.
     """
     res = [
-        e[2] if opcode(e) == "bytes" and sub_op(sizeof(e[2]), bits(e[1])) == 0 else e
+        e[2] if opcode(e) == "bytes" and e[2] != 0 and implicit(e[2], bits(e[1])) else e
         for e in res
     ]
 
@@ -308,16 +335,20 @@ def data_elements(res):
                 type(w) is int
                 and w % 8 == 0
                 and opcode(merged[-1]) == "bytes"
-                # the zeroes, then the low bytes of inner: its low bytes then
-                # only if there's nothing above them
-                and (sized(inner) or value_bits(inner) <= w)
+                # the zeroes, then the low bytes of a number: its low bytes
+                # then only if there's nothing above them - and a number of
+                # no more than a word (bytes - a range, a data - go after
+                # the zeroes: Bytes(n, v) is of a number)
+                and z + w <= 256
+                and not sized(inner)
+                and value_bits(inner) <= w
             ):
                 merged[-1] = ("bytes", (z + w) // 8, inner)
                 continue
         merged.append(e)
 
     return [
-        e[2] if opcode(e) == "bytes" and sub_op(sizeof(e[2]), bits(e[1])) == 0 else e
+        e[2] if opcode(e) == "bytes" and implicit(e[2], bits(e[1])) else e
         for e in merged
     ]
 
@@ -574,9 +605,11 @@ def simplify_exp(exp):
 
         # simplify inner expressions, and remove nested 'data's
         for e in params:
-            e = simplify_exp(
-                e
-            )  # removes further nested datas, and does other simplifications
+            # (removes further nested datas, and does other simplifications;
+            # each as wide as it was)
+            e = keep_width(e, simplify_exp(e))
+            if opcode(e) == "bytes":
+                e = as_bytes(e)
             if opcode(e) == "data":
                 res.extend(e[1:])
             else:
@@ -706,6 +739,10 @@ def simplify_exp(exp):
     res = tuple()
     for e in exp:
         res += (simplify_exp(e),)
+
+    if res != exp:
+        # what's bytes in it as wide as it was (see memloc.keep_widths)
+        res = keep_widths(exp, res)
 
     return res
 

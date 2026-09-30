@@ -31,7 +31,13 @@ from panoramix.core.algebra import (
 )
 from panoramix.core.arithmetic import is_bool, is_zero, simplify_bool
 from panoramix.core.masks import get_bit, mask_to_type
-from panoramix.core.memloc import byte_elements, sized, sizeof
+from panoramix.core.memloc import (
+    byte_elements,
+    resize_bytes,
+    sized,
+    sizeof,
+    width_of,
+)
 from panoramix.loader import Loader
 from panoramix.matcher import Any, match
 from panoramix.utils.helpers import (
@@ -2028,6 +2034,11 @@ def with_width(el):
     (see memloc.sizeof), which rewrites for display don't keep - a mask of
     the lowest 8 bits becomes a division, uint8(x >> 8) x / 256.
     """
+    if opcode(el) == "bytes" and sized(el[2]):
+        # the number bytes of another width make, as n bytes: zeroes and
+        # them, or their last n bytes (see memloc.resize_bytes)
+        res = resize_bytes(el[2], el[1])
+        return el if res is None else res
     if sized(el):
         return el
     if m := match(el, ("st", ":size", Any, Any)):
@@ -2044,19 +2055,49 @@ def with_width(el):
     return ("bytes", ("div", width, 8), el)
 
 
+def setmem_value(val, n):
+    """
+    The value of a write to n bytes of memory, as it's printed: a number
+    (its low n bytes are written), or a list of data of n bytes - bytes of
+    another width are the number they make (see memloc.keep_setmem_width).
+    """
+    if opcode(val) == "bytes":
+        if not sized(val[2]) and val[1] != n:
+            # a number
+            return val[2]
+        val = val[2]
+    if not sized(val) or width_of(val) == 8 * n:
+        return val
+    res = resize_bytes(val, n)
+    return val if res is None else res
+
+
 def fix_widths(trace):
     """the elements of what is bytes, with their width when it isn't a word"""
 
     def f(exp):
         if type(exp) != tuple:
             return exp
+        if (m := match(exp, ("setmem", ("range", Any, ":int:n"), ":val"))) and (
+            val := setmem_value(m.val, m.n)
+        ) != m.val:
+            return exp[:2] + (val,)
         positions = byte_elements(exp)
         if opcode(exp) in ("call", "staticcall", "callcode", "delegatecall"):
             # but the selector: it's printed as the function it calls
             positions = positions[-1:] if positions and positions[-1] == len(exp) - 1 else ()
         if not positions:
             return exp
-        return tuple(with_width(e) if i in positions else e for i, e in enumerate(exp))
+        res = []
+        for i, e in enumerate(exp):
+            if i in positions:
+                e = with_width(e)
+                if opcode(e) == "data" and opcode(exp) in ("data", "sha3", "arr"):
+                    # (its elements, in the list it's in)
+                    res.extend(e[1:])
+                    continue
+            res.append(e)
+        return tuple(res)
 
     return replace_f(trace, f)
 

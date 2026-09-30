@@ -579,13 +579,33 @@ def contains(exp, what):
     return False
 
 
+_keep_widths = []
+
+
+def keep_widths(old, new):
+    """see memloc.keep_widths: the operands that are bytes as wide as they were"""
+    if not _keep_widths:
+        from panoramix.core.memloc import keep_widths as k
+
+        _keep_widths.append(k)
+    return _keep_widths[0](old, new)
+
+
 def replace_f(in_exp, f):
+    """
+    in_exp with f applied to each of its expressions, from the innermost
+    out. What's bytes in it stays as wide as it was (see memloc.keep_widths).
+    """
     if type(in_exp) not in (tuple, list):
         in_exp = f(in_exp)
         return in_exp
 
     keep_type = type(in_exp)
     res = keep_type(replace_f(e, f) for e in in_exp)
+    if all(a is b for a, b in zip(res, in_exp)):
+        res = in_exp
+    elif keep_type is tuple:
+        res = keep_widths(in_exp, res)
 
     return f(res)
 
@@ -623,6 +643,8 @@ def replace_f_stop(in_exp, f):
 
     if type(in_exp) == list:
         res = list(res)
+    elif res != in_exp:
+        res = keep_widths(in_exp, res)
 
     return res
 
