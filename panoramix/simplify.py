@@ -2674,10 +2674,12 @@ def parse_counters(line):
     if len(conts) > 1:
         return a
 
-    if opcode(counter_diff) != "add":
+    if opcode(counter_diff) != "add" or len(counter_diff) != 3:
         return a
 
-    assert type(counter_diff[1]) == int
+    if type(counter_diff[1]) != int:
+        # not the counter plus a number
+        return a
 
     counter_diff = (counter_diff[0], to_real_int(counter_diff[1]), counter_diff[2])
 
@@ -2685,7 +2687,9 @@ def parse_counters(line):
     if opcode(counter_diff[2]) == "mul" and counter_diff[2][1] == 1:
         counter_diff = (counter_diff[0], counter_diff[1], counter_diff[2][2])
 
-    assert counter_diff[2] == ("var", counter), counter_diff
+    if counter_diff[2] != ("var", counter):
+        # the counter set from another variable: not a step of it
+        return a
 
     counter_step = to_real_int(counter_diff[1])
     a["step"] = counter_step
