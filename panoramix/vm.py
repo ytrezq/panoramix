@@ -43,7 +43,7 @@ from panoramix.utils.helpers import (
     opcode,
     precompiled,
     precompiled_var_names,
-    replace,
+    replace_f_stop,
 )
 
 from .loader import apply_entry, entry_known, selector_test
@@ -1431,23 +1431,38 @@ class VM(EasyCopy):
                 if r not in reads:
                     reads.append(r)
 
-        for r in reads:
+        # All read at once, before the instruction. A read in another one
+        # (the length of an array in the slot of its last element) gets its
+        # variable first, which the other is then read with; and on the
+        # stack, the outermost read is the one replaced - one after the
+        # other, the inner one replaced first, the other one wouldn't be
+        # found any more, and would be read after the instruction.
+        names = {}
+
+        def with_names(exp):
+            return replace_f_stop(
+                exp, lambda e: names.get(e) if type(e) in (tuple, str) else None
+            )
+
+        for r in sorted(reads, key=exp_size):
             self.counter += 1
             vname = f"_{self.counter}"
-            trace(("setvar", vname, r))
-            self.stack.stack = [
-                replace(item, r, ("var", vname)) for item in self.stack.stack
-            ]
-            self.known = tuple(
-                fact[:3] + (replace(fact[3], r, ("var", vname)),)
-                if opcode(fact) == "memory" and fact[3] is not None
-                else fact
-                for fact in self.known
-            )
+            trace(("setvar", vname, with_names(r)))
+            names[r] = ("var", vname)
             if (b := max_value_bits(r)) <= 128:
                 # what it was is as small as that (a size, say): for where
                 # memory is written (see bound), not to decide conditions
                 self.known += (("var_bits", ("var", vname), b),)
+
+        self.stack.stack = [with_names(item) for item in self.stack.stack]
+        self.known = tuple(
+            (
+                fact[:3] + (with_names(fact[3]),)
+                if opcode(fact) == "memory" and fact[3] is not None
+                else fact
+            )
+            for fact in self.known
+        )
 
     def apply_stack(self, ret, line):
         def trace(exp, *format_args):
