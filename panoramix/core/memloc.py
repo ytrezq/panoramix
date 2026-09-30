@@ -528,30 +528,72 @@ def split_store(line):
         return lines
 
     if m := match(line, ("store", 256, 0, ":idx", ":val")):
-        size = 256
-        off = 0
         idx, val = m.idx, m.val
         splitted = split_or(val)
 
+        if not all(all_concrete(s_size, s_off) for s_size, s_off, _ in splitted):
+            # where the parts are isn't known: nor what the rest of the
+            # word is set to
+            return [line]
+
+        if len([part for part in splitted if part[0] > 0 and part[2] != 0]) < 2:
+            # one value: the word it makes, rather than it at its bits and
+            # zeroes around them
+            return [line]
+
+        splitted = sorted(splitted, key=lambda part: part[1])
         res = []
+        # the word is written whole: the bits of no part are set to 0
+        pos = 0
         for s_size, s_off, s_val in splitted:
-            if safe_le_op(off, s_off) and safe_le_op(
-                add_op(s_size, s_off), add_op(off, size)
-            ):
-                if s_val != (
-                    "storage",
-                    s_size,
-                    s_off,
-                    idx,
-                ):  # ignore writing the same to the same storage
-                    res.append(("store", s_size, s_off, idx, s_val))
-            else:
+            if s_size <= 0:
+                continue
+            if s_off < pos or s_off + s_size > 256:
+                # parts over each other (or out of the word): that's an or
+                # of them, not stores of one then the other
                 logger.warning("unusual store")
                 return [line]
+            if s_off > pos:
+                res.append(("store", s_off - pos, pos, idx, 0))
+            if s_val != (
+                "storage",
+                s_size,
+                s_off,
+                idx,
+            ):  # ignore writing the same to the same storage
+                res.append(("store", s_size, s_off, idx, s_val))
+            pos = s_off + s_size
+        if pos < 256:
+            res.append(("store", 256 - pos, pos, idx, 0))
 
-        return res
+        return merge_zeros(res)
     else:
         return [line]
+
+
+def merge_zeros(stores):
+    """
+    A value that fits in its part with the 0 bits after it, up to a whole
+    byte: one store of both - a bool of the bits 224-231 rather than the
+    bit 224 and 0 in the 7 bits above it.
+    """
+    res = []
+    for store in stores:
+        if (
+            res
+            and (m := match(res[-1], ("store", ":int:size", ":int:off", ":idx", ":val")))
+            and store[4] == 0
+            and store[2] == m.off + m.size
+            and m.size % 8
+            and value_bits(m.val) <= m.size
+        ):
+            grow = min(store[1], 8 - m.size % 8)
+            res[-1] = ("store", m.size + grow, m.off, m.idx, m.val)
+            if grow < store[1]:
+                res.append(("store", store[1] - grow, store[2] + grow, m.idx, 0))
+            continue
+        res.append(store)
+    return res
 
 
 def memloc_overwrite(memloc, split):
