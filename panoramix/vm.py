@@ -271,17 +271,19 @@ def forget(known, names):
     """
     What's still known once what the names read may have changed. What's
     in memory only changes by the writes to it (see write_memory), even at
-    a call: a fact about it goes when its value reads something that changed.
+    a call: what a fact about it says goes when its value reads something
+    that changed - not that the place was written (it isn't fresh memory,
+    of zeroes, any more).
     """
-    return tuple(
-        fact
-        for fact in known
-        if not (
-            mentions(fact[3], names)
-            if opcode(fact) == "memory"
-            else opcode(fact) != "memory_fresh" and mentions(fact, names)
-        )
-    )
+    res = []
+    for fact in known:
+        if opcode(fact) == "memory":
+            if mentions(fact[3], names):
+                fact = fact[:3] + (None,)
+        elif opcode(fact) != "memory_fresh" and mentions(fact, names):
+            continue
+        res.append(fact)
+    return tuple(res)
 
 
 def is_known(exp, known):
