@@ -242,6 +242,20 @@ def pprint_ast(trace):
     print()
 
 
+def check_word(branch):
+    """
+    require if the branch only reverts, assert if it's only an invalid (an
+    assert of solidity < 0.8 - it uses all the gas), None otherwise.
+    """
+    if len(branch) != 1:
+        return None
+    if branch[0] == ("revert", None):
+        return "require"
+    if opcode(branch[0]) == "invalid":
+        return "assert"
+    return None
+
+
 def pprint_logic(exp, indent=2):
     INDENT_LEN = 4
 
@@ -281,12 +295,8 @@ def pprint_logic(exp, indent=2):
         exp, ("if", ":cond", ":if_true")
     ):  # one-sided ifs, only after folding
         cond, if_true = m.cond, m.if_true
-        if (
-            len(if_true) == 1
-            and (first := if_true[0])
-            and ((first == ("revert", None)) or opcode(first) == "invalid")
-        ):
-            yield " " * indent + "require " + prettify(
+        if word := check_word(if_true):
+            yield " " * indent + word + " " + prettify(
                 is_zero(exp[1]), add_color=True, parentheses=False, rem_bool=True
             )
         else:
@@ -298,24 +308,16 @@ def pprint_logic(exp, indent=2):
 
     elif m := match(exp, ("if", ":cond", ":if_true", ":if_false")):
         cond, if_true, if_false = m.cond, m.if_true, m.if_false
-        if (
-            len(if_false) == 1
-            and (first := if_false[0])
-            and (first == ("revert", None) or opcode(first) == "invalid")
-        ):
-            yield " " * indent + "require " + prettify(
+        if word := check_word(if_false):
+            yield " " * indent + word + " " + prettify(
                 exp[1], add_color=True, parentheses=False, rem_bool=True
             )
 
             for l in pprint_logic(exp[2], indent):
                 yield l
 
-        elif (
-            len(if_true) == 1
-            and (first := if_true[0])
-            and ((first == ("revert", None)) or opcode(first) == "invalid")
-        ):
-            yield " " * indent + "require " + prettify(
+        elif word := check_word(if_true):
+            yield " " * indent + word + " " + prettify(
                 is_zero(exp[1]), add_color=True, parentheses=False, rem_bool=True
             )
 
@@ -679,11 +681,9 @@ def pretty_line(r, add_color=True):
         yield COLOR_WARNING + "..." + ENDC + COLOR_GRAY + f"  # Decompilation aborted, sorry: {params}" + ENDC
 
     elif opcode(r) == "invalid":
-        _, *rest = r
-        if len(rest) > 0:
-            yield "revert "  # + COLOR_GRAY + f"# {rest}" + ENDC
-        else:
-            yield "revert"
+        # not a revert: all the gas is used (an assert of solidity < 0.8, a
+        # jump to where it can't)
+        yield "invalid"
 
     elif r == ("revert", None):
         yield "revert"
