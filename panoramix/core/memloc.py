@@ -365,8 +365,53 @@ def split_setmem(line):
     return res
 
 
+def byte_field_store(line):
+    """
+    The store of a field at a byte computed at runtime - an element of a
+    packed array - as the compiler writes it, the whole slot:
+
+        stor[idx] = v * 256^k or not(mask * 256^k) and stor[idx]
+
+    is the field of the bits of mask at the byte k set to v:
+    store(size, 8 * k, idx, v). None if the line isn't that.
+    """
+    m = match(line, ("store", 256, 0, ":idx", ("or", ":a", ":b")))
+    if not m:
+        return None
+
+    def times_byte(exp):
+        # (x, k) if exp is x * 256^k
+        if opcode(exp) != "mul":
+            return None
+        powers = [f for f in exp[1:] if match(f, ("exp", 256, Any))]
+        others = [f for f in exp[1:] if f not in powers and f != 1]
+        if len(powers) != 1 or len(others) != 1:
+            return None
+        return others[0], powers[0][2]
+
+    for put, keep in ((m.a, m.b), (m.b, m.a)):
+        if not (mk := match(keep, ("and", ":x", ":y"))):
+            continue
+        for cleared, stor in ((mk.x, mk.y), (mk.y, mk.x)):
+            if stor != ("storage", 256, 0, m.idx) or opcode(cleared) != "not":
+                continue
+            mask = times_byte(cleared[1])
+            val = times_byte(put)
+            if not (mask and val) or mask[1] != val[1] or type(mask[0]) != int:
+                continue
+            size = mask[0].bit_length()
+            if mask[0] != 2**size - 1 or value_bits(val[0]) > size:
+                continue
+            return [("store", size, mul_op(8, val[1]), m.idx, val[0])]
+
+    return None
+
+
 def split_store(line):
     logger.debug("split_store %s", line)
+
+    if (res := byte_field_store(line)) is not None:
+        return res
 
     if (
         m := match(
