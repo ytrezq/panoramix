@@ -519,14 +519,14 @@ def pretty_line(r, add_color=True):
         )
 
         # the ones not indexed are in the data, the indexed ones are topics
-        in_log = [i for i in inputs if not i.get("indexed")] + [
-            i for i in inputs if i.get("indexed")
-        ]
+        not_indexed = [i for i in inputs if not i.get("indexed")]
+        indexed = [i for i in inputs if i.get("indexed")]
+        in_log = not_indexed + indexed
 
-        if len(inputs) == 0 or len(res_params) == 0:
+        if len(inputs) == 0 and len(res_params) == 0:
             yield col(f"log {e}", COLOR_GRAY)
 
-        elif len(in_log) == len(res_params):
+        elif len(not_indexed) == len(data_params) and len(indexed) == len(topic_params):
             p_list = [
                 (i["type"] + (" indexed" if i.get("indexed") else ""), i["name"], p)
                 for i, p in zip(in_log, res_params)
@@ -555,9 +555,14 @@ def pretty_line(r, add_color=True):
 
                 yield col(" " * ind + f"{pline(last)})", COLOR_GRAY)
         else:
-            # not the params of the abi: the signature, then what the log has
+            # not the params of the abi - an event of the same signature,
+            # indexed otherwise (ERC-721's Approval, ERC-20's): the
+            # signature, then what the log has
             listed = data_params + tuple("indexed " + t for t in topic_params)
-            yield col(f"log {e}: {', '.join(listed)}", COLOR_GRAY)
+            yield col(
+                f"log {e}{':' if listed else ''} {', '.join(listed)}".rstrip(),
+                COLOR_GRAY,
+            )
 
     elif m := match(r, ("callcode", ":gas", ":addr", ":wei", ":fname", ":fparams")):
         gas, addr, wei, fname, fparams = m.gas, m.addr, m.wei, m.fname, m.fparams
