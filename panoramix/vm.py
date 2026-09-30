@@ -628,8 +628,15 @@ class VM(EasyCopy):
                     folded, var_list = fold_stacks(
                         old_stack, stack, loop_dest.label.depth
                     )
-                    node.trace = None
-                    node.set_label(loop_dest, tuple(var_list), folded)
+                    if var_list:
+                        node.trace = None
+                        node.set_label(loop_dest, tuple(var_list), folded)
+                        continue
+
+                    # nothing on the stack changes from one iteration to the
+                    # next (the loop keeps what it changes in memory, as Vyper
+                    # does): back to the start, rather than a label again
+                    node.trace = [("goto", loop_dest, ())]
                     continue
 
                 var_positions = set(stack_pos for *_, stack_pos in beginvars)
