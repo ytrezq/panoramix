@@ -375,7 +375,7 @@ def eval_bool(exp, known_true=True, symbolic=True):
             return True
 
         if type(left) == int and type(right) == int:
-            return left <= right
+            return left % UINT_256_CEILING <= right % UINT_256_CEILING
 
         try:
             return algebra.le_op(left, right)
@@ -390,7 +390,7 @@ def eval_bool(exp, known_true=True, symbolic=True):
             return False
 
         if type(left) == int and type(right) == int:
-            return left < right
+            return left % UINT_256_CEILING < right % UINT_256_CEILING
 
         try:
             return algebra.lt_op(left, right)
@@ -402,7 +402,7 @@ def eval_bool(exp, known_true=True, symbolic=True):
         right = eval(exp[2])
 
         if type(left) == int and type(right) == int:
-            return left > right
+            return left % UINT_256_CEILING > right % UINT_256_CEILING
 
         if left == right:
             return False
@@ -425,7 +425,7 @@ def eval_bool(exp, known_true=True, symbolic=True):
         right = eval(exp[2])
 
         if type(left) == int and type(right) == int:
-            return left >= right
+            return left % UINT_256_CEILING >= right % UINT_256_CEILING
 
         if left == right:
             return True
@@ -651,7 +651,9 @@ def eval(exp):
             return eval_symbolic(exp)
 
     if exp[0] in OPCODES:
-        return OPCODES[exp[0]](*exp[1:])
+        # of words: -1 is 2**256 - 1 (the operations, py-evm's, take them
+        # from 0 up)
+        return OPCODES[exp[0]](*(p % UINT_256_CEILING for p in exp[1:]))
 
     return exp
 
