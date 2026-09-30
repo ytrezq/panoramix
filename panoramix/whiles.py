@@ -244,6 +244,12 @@ def to_while(trace, jd, path=None):
             # the reverts and returns along the way
             return [], rewrite_trace([line], add_path), trace, ("bool", 1)
 
+        elif opcode(line) == "label":
+            # a loop in this one, before its exit condition (Vyper tests it
+            # at the end): the rest of the trace is that loop, and what
+            # follows it, where this one goes on or ends
+            return [], path + [line] + trace, [], ("bool", 1)
+
         else:
             path.append(line)
 
