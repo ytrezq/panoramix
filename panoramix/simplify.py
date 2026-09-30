@@ -943,66 +943,40 @@ def readability(trace):
 
 
 def replace_bytes_or_string_length(trace):
-    # see unicorn contract, version/name
+    """
+    The length of the bytes (or string) at a slot, as the compiler reads it
+    from the word there - twice it in the low byte of a short one, twice it
+    plus 1 in a long one:
+
+        (x & (256 * iszero(x & 1) - 1)) >> 1    with x = stor[key]
+
+    is ("length", key) - bits of it when the shift keeps fewer.
+    """
+
+    def is_mask(e, key):
+        # 256 * iszero(stor[key] & 1) - 1: 255 when the low bit is 0, else -1
+        m = match(e, ("add", -1, ("mask_shl", ":int:size", 0, 8, ("iszero", ":low"))))
+        return bool(m) and m.size >= 1 and m.low == ("storage", 1, 0, key)
 
     def replace(expr):
         m = match(
-            expr,
-            (
-                "mask_shl",
-                ":size",
-                ":offset",
-                -1,
-                (
-                    "and",
-                    ("storage", Any, 0, ":key"),
-                    (
-                        "add",
-                        -1,
-                        (
-                            "mask_shl",
-                            Any,
-                            Any,
-                            Any,
-                            ("iszero", ("storage", Any, 0, ":key")),
-                        ),
-                    ),
-                ),
-            ),
-        ) or match(
-            expr,
-            (
-                "mask_shl",
-                ":size",
-                ":offset",
-                -1,
-                (
-                    "and",
-                    (
-                        "add",
-                        -1,
-                        (
-                            "mask_shl",
-                            Any,
-                            Any,
-                            Any,
-                            ("iszero", ("storage", Any, 0, ":key")),
-                        ),
-                    ),
-                    ("storage", Any, 0, ":key"),
-                ),
-            ),
+            expr, ("mask_shl", ":int:size", ":int:offset", -1, ("and", ":a", ":b"))
         )
-        if not m:
+        if not m or m.offset < 1 or m.size + m.offset > 256:
             return
-        key, size, offset = m.key, m.size, m.offset
+        size, offset = m.size, m.offset
+        for word, mask in ((m.a, m.b), (m.b, m.a)):
+            if (w := match(word, ("storage", 256, 0, ":key"))) and is_mask(mask, w.key):
+                key = w.key
+                break
+        else:
+            return
 
         if type(key) == int:
             key = ("loc", key)
 
         if size == 255 and offset == 1:
             return ("storage", 256, 0, ("length", key))
-        assert offset >= 1
         return ("mask_shl", size, offset - 1, 0, ("storage", 256, 0, ("length", key)))
 
     return replace_f_stop(trace, replace)
