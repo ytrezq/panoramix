@@ -1276,12 +1276,6 @@ def _try_add(self, other):
             m = ("mask_shl", 256 - y, y, 0, x)  # - x #== 2**y-1 - Mask(y,0,0, x)
             if self[2] == m:
                 return mul_op(other[1], mask_op(x, size=y))
-            m = ("mask_shl", 251 - y, y, 0, x)  # close enough ;)
-            # happens in memcopy loops, shouldn't cause significant bugs
-            # and helps clean up the code a lot
-
-            if self[2] == m:
-                return mul_op(other[1], mask_op(x, size=y))
 
     # other
 
