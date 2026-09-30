@@ -389,19 +389,20 @@ def simplify_exp(exp):
 
     if (
         (m := match(exp, ("mask_shl", ":int:size", 5, 0, ("add", ":int:num", ...))))
-        and m.size > 240
+        and m.size + 5 >= 256
         and m.num % 32 == 31
         and m.num > 32
     ):
         # floor32(num + x) = (num - 31) + floor32(31 + x), num - 31 being
-        # a multiple of 32
+        # a multiple of 32 - with a mask up to the top of the word, a
+        # narrower one would drop the high bits of num - 31
         add_terms = exp[-1][2:]  # the "..."
         exp = (
             "add",
             m.num - 31,
             (
                 "mask_shl",
-                256,
+                m.size,
                 5,
                 0,
                 (
