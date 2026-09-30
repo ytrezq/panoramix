@@ -317,7 +317,9 @@ class Function(EasyCopy):
         """
 
         params = get_func_params(self.hash)
-        if params:
+        if params is not None:
+            # (none for a function the abi says has none: a word of the
+            # calldata it reads isn't a param then)
             res = calldata_params(params)
         else:
             # good testing: solidstamp, auditContract
