@@ -203,6 +203,29 @@ def and_op(*args):
     return ("and",) + res
 
 
+def is_bool(exp):
+    """Whether exp is 0 or 1: its bits are then those of a truth value."""
+    if type(exp) in (int, bool):
+        return exp in (0, 1)
+
+    op = opcode(exp)
+
+    if op in ("bool", "iszero", "lt", "gt", "le", "ge", "eq", "slt", "sgt", "sle", "sge"):
+        return True
+
+    if op in ("and", "or", "xor"):
+        return all(is_bool(e) for e in exp[1:])
+
+    if m := match(exp, ("mask_shl", 1, ":int:off", ":int:shl", Any)):
+        # a single bit, moved down to the lowest one
+        return m.off + m.shl == 0
+
+    if m := match(exp, ("storage", 1, ":int:off", Any)):
+        return m.off >= 0
+
+    return False
+
+
 def comp_bool(left, right):
     if left == right:
         return True
@@ -237,7 +260,9 @@ def is_zero(exp):
             res.append(is_zero(r))
         return and_op(*res)
 
-    if opcode(exp) == "and":
+    if opcode(exp) == "and" and all(is_bool(r) for r in exp[1:]):
+        # of truth values: one of them is false. Not of other numbers - of
+        # 1 and 2, neither of which is 0, `and` is 0.
         res = []
         for r in exp[1:]:
             res.append(is_zero(r))
