@@ -77,6 +77,18 @@ VARYING_READS = (
 )
 
 
+def always_reverts(trace):
+    """True if every path through the trace reverts."""
+    if not trace:
+        return False
+
+    last = trace[-1]
+    if opcode(last) == "if":
+        return always_reverts(last[2]) and always_reverts(last[3])
+
+    return opcode(last) in ("revert", "invalid")
+
+
 def varies(exp):
     """True if exp reads something that isn't a constant of the contract."""
     if type(exp) is str:
@@ -532,7 +544,8 @@ class Function(EasyCopy):
             self.trace = self.trace[0][2]
             self.payable = False
         else:
-            self.payable = True
+            # a function that always reverts doesn't take any ether either
+            self.payable = not always_reverts(self.trace)
 
         exp_text.append(("payable", self.payable))
 
