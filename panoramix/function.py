@@ -527,21 +527,29 @@ class Function(EasyCopy):
 
         exp_text.append(("possible return values", prettify(self.returns)))
 
-        first = self.trace[0]
+        # the check that there's no value, after what has no effect (Vyper
+        # writes some constants to memory first)
+        k = 0
+        while k < len(self.trace) - 1 and opcode(self.trace[k]) in (
+            "setmem",
+            "setvar",
+        ):
+            k += 1
+        first = self.trace[k]
 
         if (
             opcode(first) == "if"
             and simplify_bool(first[1]) == "callvalue"
             and (first[2][0] == ("revert", None) or opcode(first[2][0]) == "invalid")
         ):
-            self.trace = self.trace[0][3]
+            self.trace = self.trace[:k] + first[3]
             self.payable = False
         elif (
             opcode(first) == "if"
             and simplify_bool(first[1]) == ("iszero", "callvalue")
             and (first[3][0] == ("revert", None) or opcode(first[3][0]) == "invalid")
         ):
-            self.trace = self.trace[0][2]
+            self.trace = self.trace[:k] + first[2]
             self.payable = False
         else:
             # a function that always reverts doesn't take any ether either
