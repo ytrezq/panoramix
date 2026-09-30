@@ -86,6 +86,7 @@ from panoramix.utils.helpers import (
     opcode,
     replace,
     replace_f,
+    replace_vars,
     replace_f_stop,
     rewrite_trace,
     rewrite_trace_full,
@@ -1206,27 +1207,18 @@ def propagate_storage_in_loops(trace):
 
 def _loop_to_setmem(line):
     def memidx_to_memrange(mem_idx, setvars, stepvars, endvars):
-        mem_idx_next = mem_idx
-        for v in stepvars:
-            op, v_idx, v_val = v
-            assert op == "setvar"
-            mem_idx_next = replace(mem_idx_next, ("var", v_idx), v_val)
+        # (the values of the next iteration, of the last, of the first: each
+        # all at once, see replace_vars)
+        assert all(opcode(v) == "setvar" for v in list(stepvars) + list(setvars))
+        mem_idx_next = replace_vars(mem_idx, {v[1]: v[2] for v in stepvars})
 
         diff = sub_op(mem_idx_next, mem_idx)
 
         if diff not in (32, -32):
             return None, None
 
-        mem_idx_last = mem_idx
-        for v_idx, v_val in endvars.items():
-            mem_idx_last = replace(mem_idx_last, ("var", v_idx), v_val)
-
-        mem_idx_first = mem_idx
-        for v in setvars:
-            op, v_idx, v_val = v
-            assert op == "setvar"
-
-            mem_idx_first = replace(mem_idx_first, ("var", v_idx), v_val)
+        mem_idx_last = replace_vars(mem_idx, dict(endvars))
+        mem_idx_first = replace_vars(mem_idx, {v[1]: v[2] for v in setvars})
 
         if diff == 32:
             mem_len = sub_op(mem_idx_last, mem_idx_first)
@@ -2670,12 +2662,11 @@ def while_touches_mem(line, mem_idx):
 
         return False
 
-    for v in a["setvars"]:
-        v_idx, v_start = v[1], v[2]
-        v_end = a["lastvars"][v_idx]
-
-        setmems_begin = replace_var(setmems_begin, v_idx, v_start)
-        setmems_end = replace_var(setmems_end, v_idx, v_end)
+    # (each all at once, see replace_vars)
+    setmems_begin = replace_vars(setmems, {v[1]: v[2] for v in a["setvars"]})
+    setmems_end = replace_vars(
+        setmems, {v[1]: a["lastvars"][v[1]] for v in a["setvars"]}
+    )
 
     for idx, _ in enumerate(setmems):
         r_begin = memloc_left(setmems_begin[idx])
@@ -2700,7 +2691,7 @@ def while_uses_mem(line, mem_idx):
     assert op == "while"
     a = parse_counters(line)
 
-    mems = find_mems(line)
+    mems = list(find_mems(line))
 
     #    mems = extract_mems(line)
 
@@ -2716,12 +2707,9 @@ def while_uses_mem(line, mem_idx):
 
         return False
 
-    for v in a["setvars"]:
-        v_idx, v_start = v[1], v[2]
-        v_end = a["lastvars"][v_idx]
-
-        mems_begin = replace_var(mems_begin, v_idx, v_start)
-        mems_end = replace_var(mems_end, v_idx, v_end)
+    # (each all at once, see replace_vars)
+    mems_begin = replace_vars(mems, {v[1]: v[2] for v in a["setvars"]})
+    mems_end = replace_vars(mems, {v[1]: a["lastvars"][v[1]] for v in a["setvars"]})
 
     for idx, _ in enumerate(mems):
         r_begin = memloc_left(mems_begin[idx])

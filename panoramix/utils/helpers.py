@@ -610,6 +610,24 @@ def replace_f(in_exp, f):
     return f(res)
 
 
+def replace_vars(exp, values):
+    """
+    exp with each variable ("var", i) of `values` ({i: value}) replaced by
+    its value - all at once, as the setvars of a continue happen: a value
+    that has another of them keeps it (`s = s + k, k = k + 1` makes s + k
+    of s, not s + k + 1).
+    """
+    if not values:
+        return exp
+
+    def f(e):
+        if type(e) is tuple and len(e) == 2 and e[0] == "var" and e[1] in values:
+            return values[e[1]]
+        return e
+
+    return replace_f(exp, f)
+
+
 def replace(in_exp, what, by_what):
     if in_exp == what:
         return by_what

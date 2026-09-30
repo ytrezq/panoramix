@@ -63,8 +63,8 @@ from panoramix.utils.helpers import (
     find_f_set,
     find_op_list,
     opcode,
-    replace,
     replace_f,
+    replace_vars,
     replace_f_stop,
     rewrite_trace,
     rewrite_trace_full,
@@ -123,8 +123,7 @@ def make(trace):
             inside = make(inside)
             remaining = make(remaining)
 
-            for _, v_idx, v_val in vars:
-                before = replace(before, ("var", v_idx), v_val)
+            before = replace_vars(before, {v_idx: v_val for _, v_idx, v_val in vars})
             before = make(before)
 
             res.extend(before)
@@ -172,9 +171,8 @@ def to_while(trace, jd, path=None):
         # the lines preceding the exit condition are executed again after
         # the body, before the next iteration
         if m := match(line, ("goto", Any, ":svs")):
-            path2 = path
-            for _, v_idx, v_val in m.svs:
-                path2 = replace(path2, ("var", v_idx), v_val)
+            # (the values of the next iteration, all at once)
+            path2 = replace_vars(path, {v_idx: v_val for _, v_idx, v_val in m.svs})
 
             return path2 + [line]
         else:

@@ -327,8 +327,13 @@ class Machine:
             self.run_trace(line[2] if self.ev(line[1]) else line[3], loops)
         elif op == "while":
             _, cond, body, jd, setvars = line
+            # all at once, as a continue's (see replace_vars)
+            new = {}
             for sv in setvars:
-                self.run_line(sv, loops)
+                if opcode(sv) != "setvar":
+                    raise Unsupported("while")
+                new[sv[1]] = self.ev(sv[2])
+            self.vars.update(new)
             while self.ev(cond):
                 self.steps += 1
                 if self.steps > self.max_steps:
