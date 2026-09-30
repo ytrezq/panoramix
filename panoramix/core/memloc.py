@@ -1223,6 +1223,19 @@ def fill_mem(exp, split, split_val):
     m_right = add_op(m_left, m_len)
     s_right = add_op(s_left, s_len)
 
+    if range_contains(split, memloc) is True:
+        inside = slice_exp(
+            split_val,
+            sub_op(m_left, s_left),
+            sub_op(m_right, s_left),
+            width=bits(s_len),
+        )
+        if inside is not None:
+            # all of it was written: that part of the value (maybe none of
+            # it, for a length that may be 0 - the padding of an array to
+            # whole words)
+            return inside
+
     logger.debug(f"orig memloc: {m_left} len {m_len} right {m_right}")
     logger.debug(f"split memloc: {s_left} len {s_len} right {s_right}")
 
