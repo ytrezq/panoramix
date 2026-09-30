@@ -1405,6 +1405,9 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
                 type_name = "uint255"
             else:
                 type_name = mask_to_type(size)
+                if type_name is None and 0 < size < 256 and size % 8 == 0:
+                    # uint24, uint96... like the ones above
+                    type_name = f"uint{size}"
 
             if type_name is not None:
                 return (
