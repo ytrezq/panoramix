@@ -9,6 +9,7 @@ from panoramix.core.algebra import (
     _max_op,
     add_ge_zero,
     add_op,
+    all_concrete,
     apply_mask,
     apply_mask_to_storage,
     bits,
@@ -428,7 +429,13 @@ def simplify_exp(exp):
             ),
         )
 
-    if m := match(exp, ("iszero", ("mask_shl", ":size", ":off", ":shl", ":val"))):
+    if (
+        (m := match(exp, ("iszero", ("mask_shl", ":size", ":off", ":shl", ":val"))))
+        and all_concrete(m.size, m.off, m.shl)
+        and -m.off <= m.shl <= 256 - m.size - m.off
+    ):
+        # a shift that loses none of the bits of the mask doesn't change
+        # whether they're all 0
         exp = ("iszero", ("mask_shl", m.size, m.off, 0, m.val))
 
     if m := match(exp, ("max", ":single")):
