@@ -732,16 +732,20 @@ def pretty_line(r, add_color=True):
             # split long returns into lines. e.g. kitties.getKitten, or kitties.tokenMetadata
             #            yield str(len(ret_val))
             res_mem = list(res_mem)
-            if res_mem[0] == "32":
+            if res_mem[0] == "32" and len(res_mem) > 1:
                 res_mem.pop(0)
                 res_mem[0] = (
                     "32, " + res_mem[0]
                 )  # happens often, this is probably an array structure,
                 # and sole `32` in first line looks ugly
 
-            yield f"{op} {res_mem[0]}, "
-            for idx, l in enumerate(res_mem[1:]):
-                yield " " * len(op) + " " + l + ("," if idx != len(res_mem) - 2 else "")
+            if len(res_mem) == 1:
+                yield f"{op} {res_mem[0]}"
+            else:
+                yield f"{op} {res_mem[0]}, "
+                for idx, l in enumerate(res_mem[1:]):
+                    comma = "," if idx != len(res_mem) - 2 else ""
+                    yield " " * len(op) + " " + l + comma
 
     #            assert op == 'revert'
     #            yield "{} with {}".format(op, ret_val) # adding 'with' to make it more readable
