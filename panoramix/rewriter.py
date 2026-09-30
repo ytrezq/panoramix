@@ -41,6 +41,7 @@ from panoramix.core.arithmetic import is_zero, to_real_int
 from panoramix.core.masks import get_bit, to_mask, to_neg_mask
 from panoramix.core.memloc import (
     apply_mask_to_range,
+    low_zero_bits,
     memloc_overwrite,
     range_overlaps,
     sizeof,
@@ -77,72 +78,84 @@ from panoramix.utils.helpers import (
 
 
 def postprocess_exp(exp):
-    if opcode(exp) == "data":
-        terms = exp[1:]
-        # make arrays in data
-        concrete = [t for t in terms if type(t) == int and t % 32 == 0]
-        if len(concrete) == 1:
-            # potential array in data?
-            assert concrete[0] % 32 == 0
-            loc = concrete[0] // 32
-            if (
-                loc + 1 < len(terms)
-                and loc > terms.index(concrete[0])
-                # the offset is one of words up to the length
-                and all(sizeof(t) == 256 for t in terms[: loc + 1])
-            ):
-                arr = ("arr",) + terms[loc:]
+    """
+    An array in a list of data - its offset, then after the other words its
+    length and content - as Array(len=..., data=...), that is ABI-encoded:
+    its content padded with zeroes to whole words (see OUTPUT.md). Where the
+    data has that padding only: its content is whole words, or is as many
+    bytes as its length followed by the zeroes up to them. DSNote's log of
+    msg.data, `log ... call.value, 64, calldata.size, call.data[0 len
+    calldata.size]`, has none.
+    """
+    if opcode(exp) != "data":
+        return exp
 
-                # heuristics for cleaning up various misprocessed stuff
+    terms = exp[1:]
+    concrete = [t for t in terms if type(t) == int and t % 32 == 0]
+    if len(concrete) != 1:
+        return exp
 
-                if (
-                    m := match(arr, ("arr", ":l", (":op", Any, ":l"), ...))
-                ) and is_array(m.op):
-                    arr = arr[:3]
-
-                elif (
-                    m := match(
-                        arr,
-                        (
-                            "arr",
-                            ":l",
-                            (
-                                "mask_shl",
-                                ("mask_shl", 253, 0, 3, ":l"),
-                                Any,
-                                Any,
-                                ("data", (":op", ":st", ":l"), ...),
-                                ...,
-                            ),
-                        ),
-                    )
-                ) and is_array(m.op):
-                    arr = ("arr", m.l, (m.op, m.st, m.l))
-
-                t2 = tuple([arr if t == loc * 32 else t for t in terms[:loc]])
-                return ("data",) + t2
-
-    # this would really require debugging as to why such thing happens, and a nicer cleanup.
-    # but it's last minute fixes again :)
-
-    if m := match(
-        exp,
-        (
-            "arr",
-            ":l",
-            (
-                "mask_shl",
-                ("mask_shl", Any, 0, 3, ":l"),
-                ("add", 256, Any),
-                ("add", -256, Any),
-                ("data", ("call.data", ":s", ":l"), ...),
-                ...,
-            ),
-        ),
+    loc = concrete[0] // 32
+    if not (
+        loc + 1 < len(terms)
+        and loc > terms.index(concrete[0])
+        # the offset is one of words up to the length
+        and all(sizeof(t) == 256 for t in terms[: loc + 1])
     ):
-        return ("arr", m.l, ("call.data", m.s, m.l))
+        return exp
 
-    return exp
+    content = abi_content(terms[loc], terms[loc + 1 :])
+    if content is None:
+        return exp
+
+    arr = ("arr", terms[loc]) + content
+    t2 = tuple([arr if t == loc * 32 else t for t in terms[:loc]])
+    return ("data",) + t2
+
+
+def abi_content(length, content):
+    """
+    What an Array(len=length, data=...) of the bytes of content is printed
+    with - as they are if they're whole words (padding them adds nothing),
+    without the zeroes after its `length` bytes up to whole words - None if
+    they're neither.
+    """
+    content = tuple(content)
+    size = byte_size(content)
+
+    data = content
+    while data and (data[-1] == 0 or match(data[-1], ("bytes", Any, 0))):
+        data = data[:-1]
+    words = ("mask_shl", 251, 5, 0, add_op(31, length))
+    if (
+        size is not None
+        and sub_op(byte_size(data), length) == 0
+        and sub_op(size, words) == 0
+    ):
+        return data
+
+    if size is not None and low_zero_bits(size) >= 5:
+        return content
+
+    return None
+
+
+def byte_size(terms):
+    """how many bytes the elements of a data are, None if that's not known"""
+    res = 0
+    for t in terms:
+        if m := match(t, ("bytes", ":n", Any)):
+            n = m.n
+        elif (m := match(t, (":op", Any, ":n"))) and is_array(m.op):
+            n = m.n
+        elif m := match(t, ("mem", ("range", Any, ":n"))):
+            n = m.n
+        elif type(w := sizeof(t)) is int and w % 8 == 0:
+            n = w // 8
+        else:
+            return None
+        res = add_op(res, n)
+    return res
 
 
 def postprocess_trace(line):

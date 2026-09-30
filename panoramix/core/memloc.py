@@ -435,6 +435,20 @@ def sizeof(exp):  # returns size of expression in *bits*
     return None
 
 
+def low_zero_bits(exp):
+    """How many of the lowest bits of exp are sure to be 0."""
+    if type(exp) is int:
+        exp %= 2**256
+        return 256 if exp == 0 else (exp & -exp).bit_length() - 1
+    if m := match(exp, ("mask_shl", Any, ":int:off", ":int:shl", Any)):
+        return max(0, min(256, m.off + m.shl))
+    if opcode(exp) == "mul":
+        return min(256, sum(low_zero_bits(e) for e in exp[1:]))
+    if opcode(exp) == "add":
+        return min(low_zero_bits(e) for e in exp[1:])
+    return 0
+
+
 def byte_elements(exp):
     """
     The positions in exp of its elements of bytes: of a data, a sha3, an
