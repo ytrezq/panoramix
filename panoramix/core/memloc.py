@@ -117,12 +117,19 @@ BOUNDED_SYMBOLS = {
 }
 
 
-def max_value_bits(exp):
+def max_value_bits(exp, bounds=None):
     """
     An upper bound of the bit length of exp. Numbers well below 2**256 add
     up like integers do, without wrapping around (see the comparisons of
-    sums in simplify_exp).
+    sums in simplify_exp). bounds: the bit lengths known of some of what
+    exp is made of (a variable that holds a size, say).
     """
+    if bounds and type(exp) in (tuple, str) and exp in bounds:
+        return bounds[exp]
+
+    def bits(e):
+        return max_value_bits(e, bounds)
+
     if type(exp) == int:
         return exp.bit_length() if 0 <= exp < 2**256 else 256
 
@@ -133,26 +140,26 @@ def max_value_bits(exp):
 
     if op == "add" and len(exp) > 1:
         terms = exp[1:]
-        top = max(max_value_bits(t) for t in terms)
+        top = max(bits(t) for t in terms)
         return min(256, top + (len(terms) - 1).bit_length())
 
     if op == "mul" and len(exp) > 1:
-        return min(256, sum(max_value_bits(t) for t in exp[1:]))
+        return min(256, sum(bits(t) for t in exp[1:]))
 
     if op == "div" and len(exp) == 3:
-        return max_value_bits(exp[1])
+        return bits(exp[1])
 
     if op == "mod" and len(exp) == 3:
-        return min(max_value_bits(exp[1]), max_value_bits(exp[2]))
+        return min(bits(exp[1]), bits(exp[2]))
 
     if op == "and" and len(exp) > 1:
-        return min(max_value_bits(t) for t in exp[1:])
+        return min(bits(t) for t in exp[1:])
 
     if op in ("or", "xor") and len(exp) > 1:
-        return max(max_value_bits(t) for t in exp[1:])
+        return max(bits(t) for t in exp[1:])
 
     if m := match(exp, ("mask_shl", ":int:size", ":int:off", ":int:shl", ":x")):
-        top = min(m.off + m.size, max_value_bits(m.x))
+        top = min(m.off + m.size, bits(m.x))
         if top <= m.off:
             return 0
         return max(0, min(top + m.shl, 256))

@@ -25,6 +25,7 @@ from panoramix.core.arithmetic import (
     mentions,
     simplify_bool,
 )
+from panoramix.core.memloc import max_value_bits
 from panoramix.matcher import match
 from panoramix.prettify import pprint_trace
 from panoramix.utils.helpers import (
@@ -173,27 +174,54 @@ def upper_bound(v, known):
     return res
 
 
+def bound(v, known):
+    """
+    The highest value v can have, below 2**128: by the known conditions, or
+    by what it's made of - a size of what the call has, say, that gas keeps
+    far from 2**256 (see memloc.BOUNDED_SYMBOLS). None if there's none.
+    """
+    top = upper_bound(v, known)
+    if top is None:
+        # the bounds of what it's made of (see VM.snapshot)
+        bounds = {fact[1]: fact[2] for fact in known if opcode(fact) == "var_bits"}
+        if (b := max_value_bits(v, bounds)) <= 128:
+            top = 2**b - 1
+    return top if top is not None and 0 <= top < 2**128 else None
+
+
 def write_range(known, start, size):
     """
-    The range of memory a write of size bytes at a place computed at runtime
-    may touch: base + k * i, with i below a known bound - an element of an
-    array in memory, whose index was checked. None if it's not known.
+    The range of memory a write at a place or of a size computed at runtime
+    may touch: base + k * i with i below a bound (an element of an array in
+    memory, whose index was checked; after data of a size bounded), as
+    many bytes as size can be. None if it's not known.
     """
-    if type(size) != int or opcode(start) != "add" or len(start) != 3:
+    size_top = size if type(size) == int else bound(size, known)
+    if size_top is None:
         return None
 
-    for base, offset in ((start[1], start[2]), (start[2], start[1])):
-        if type(base) != int:
-            continue
-        if m := match(offset, ("mul", ":int:k", ":i")):
-            k, i = m.k, m.i
-        elif m := match(offset, ("mask_shl", ":int:size", 0, ":int:shl", ":i")):
-            k, i = 2**m.shl, offset[4]
-        else:
-            k, i = 1, offset
-        top = upper_bound(i, known)
-        if top is not None and k > 0 and 0 <= top < 2**64:
-            return base, base + k * top + size
+    if type(start) == int:
+        return start, start + size_top
+
+    if opcode(start) != "add":
+        return None
+
+    bases = [t for t in start[1:] if type(t) == int]
+    rest = [t for t in start[1:] if type(t) != int]
+    if len(bases) != 1 or not rest or not 0 <= bases[0] < 2**128:
+        return None
+    base = bases[0]
+    offset = rest[0] if len(rest) == 1 else ("add",) + tuple(rest)
+    if m := match(offset, ("mul", ":int:k", ":i")):
+        k, i = m.k, m.i
+    elif m := match(offset, ("mask_shl", ":int:size", 0, ":int:shl", ":i")):
+        # (i & mask) << shl: at most i << shl
+        k, i = 2**m.shl, offset[4]
+    else:
+        k, i = 1, offset
+    top = bound(i, known)
+    if top is not None and 0 < k < 2**64:
+        return base, base + k * top + size_top
 
     return None
 
