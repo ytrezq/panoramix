@@ -49,6 +49,7 @@ from panoramix.utils.helpers import (
     clean_color,
     colorize,
     contains,
+    find_f_list,
     is_array,
     opcode,
     padded_hex,
@@ -257,7 +258,57 @@ def check_word(branch):
     return None
 
 
-def pprint_logic(exp, indent=2):
+# what a path ends with, not going on after it
+ENDS_PATH = (
+    "return",
+    "stop",
+    "selfdestruct",
+    "invalid",
+    "revert",
+    "continue",
+    "break",
+    "undefined",
+)
+
+
+def add_breaks(path):
+    """
+    The body of a loop, with a break where it ends: the loop is left there
+    (see make_whiles), not gone on with - it's only by a continue that it is.
+    """
+    if not path:
+        return [("break",)]
+
+    last = path[-1]
+    if opcode(last) in ENDS_PATH:
+        return path
+
+    if m := match(last, ("if", ":cond", ":if_true", ":if_false")):
+        return path[:-1] + [
+            ("if", m.cond, add_breaks(m.if_true), add_breaks(m.if_false))
+        ]
+
+    return path + [("break",)]
+
+
+def continues_from_inside(path, jd):
+    """Whether a loop inside path continues the loop jd."""
+
+    def f(exp):
+        if opcode(exp) == "while":
+            inner = exp[2] if type(exp[2]) == list else exp[2].trace
+            return find_f_list(inner, lambda e: [e] if match(e, ("continue", jd, Any)) else [])
+        return []
+
+    return bool(find_f_list(path, f))
+
+
+def pprint_logic(exp, indent=2, loops=()):
+    """
+    The lines of exp, indented by indent. loops: the (jd, label) of the
+    loops it's in, the innermost last - a continue of another one than the
+    innermost names it.
+    """
     INDENT_LEN = 4
 
     if opcode(exp) == "while":
@@ -265,26 +316,51 @@ def pprint_logic(exp, indent=2):
             cond, path, jd, vars = exp[1], exp[2], exp[3], exp[4]
         else:
             cond, path = exp[1], exp[2]
-            vars = []
+            jd, vars = None, []
 
         for v in sequential_setvars(vars):
             yield " " * indent + list(
                 pretty_line(("setvar", v[1], v[2]), add_color=True)
             )[0]
 
+        if type(path) != list:
+            path = path.trace
+
+        label = None
+        if jd is not None and continues_from_inside(path, jd):
+            label = f"loop{len(loops) + 1}"
+
         if cond in (1, ("bool", 1)):
             cond_text = "True"
         else:
             cond_text = prettify(cond, add_color=True, parentheses=False, rem_bool=True)
         while_line = (
-            COLOR_GREEN + "while " + ENDC + cond_text + COLOR_GREEN + ":" + ENDC
+            (f"{label}: " if label else "")
+            + COLOR_GREEN
+            + "while "
+            + ENDC
+            + cond_text
+            + COLOR_GREEN
+            + ":"
+            + ENDC
         )
         yield " " * indent + while_line
-        if type(path) != list:
-            path = path.trace
 
-        for l in pprint_logic(path, indent + INDENT_LEN):
+        for l in pprint_logic(add_breaks(path), indent + INDENT_LEN, loops + ((jd, label),)):
             yield l
+
+    elif m := match(exp, ("continue", ":jd", ":setvars")):
+        for v in sequential_setvars(m.setvars):
+            yield " " * indent + str(list(pretty_line(v, add_color=True))[0])
+        target = ""
+        if loops and loops[-1][0] != m.jd:
+            # of a loop the continue is in a loop in
+            labels = [label for jd, label in loops if jd == m.jd]
+            target = " " + (labels[0] if labels and labels[0] else "?")
+        yield " " * indent + COLOR_GREEN + "continue" + ENDC + target
+
+    elif opcode(exp) == "break":
+        yield " " * indent + COLOR_GREEN + "break" + ENDC
 
     elif opcode(exp) == "require":
         _, cond = exp
@@ -304,7 +380,7 @@ def pprint_logic(exp, indent=2):
             yield " " * indent + "if " + prettify(
                 exp[1], add_color=True, parentheses=False, rem_bool=True
             ) + ":"
-            for l in pprint_logic(if_true, indent + INDENT_LEN):
+            for l in pprint_logic(if_true, indent + INDENT_LEN, loops):
                 yield l
 
     elif m := match(exp, ("if", ":cond", ":if_true", ":if_false")):
@@ -314,7 +390,7 @@ def pprint_logic(exp, indent=2):
                 exp[1], add_color=True, parentheses=False, rem_bool=True
             )
 
-            for l in pprint_logic(exp[2], indent):
+            for l in pprint_logic(exp[2], indent, loops):
                 yield l
 
         elif word := check_word(if_true):
@@ -322,7 +398,7 @@ def pprint_logic(exp, indent=2):
                 is_zero(exp[1]), add_color=True, parentheses=False, rem_bool=True
             )
 
-            for l in pprint_logic(exp[3], indent):
+            for l in pprint_logic(exp[3], indent, loops):
                 yield l
 
         else:
@@ -330,7 +406,7 @@ def pprint_logic(exp, indent=2):
                 exp[1], add_color=True, parentheses=False, rem_bool=True
             ) + ":"
 
-            for l in pprint_logic(if_true, indent + INDENT_LEN):
+            for l in pprint_logic(if_true, indent + INDENT_LEN, loops):
                 yield l
             """
             while len(if_false) == 1 and opcode(if_false) == 'if' and len(if_false) == 4:
@@ -343,7 +419,7 @@ def pprint_logic(exp, indent=2):
                     yield l"""
 
             yield " " * indent + "else:"
-            for l in pprint_logic(if_false, indent + INDENT_LEN):
+            for l in pprint_logic(if_false, indent + INDENT_LEN, loops):
                 yield l
 
     elif type(exp) == list:
@@ -351,17 +427,17 @@ def pprint_logic(exp, indent=2):
             if idx == len(exp) - 1 and indent == 2 and line == ("stop",):
                 pass  # don't print the last stop
             else:
-                for l in pprint_logic(line, indent):
+                for l in pprint_logic(line, indent, loops):
                     yield l
 
     elif opcode(exp) == "or" and len(exp) > 1:
         yield " " * indent + "if"
-        for l in pprint_logic(exp[1], indent + INDENT_LEN):
+        for l in pprint_logic(exp[1], indent + INDENT_LEN, loops):
             yield l
 
         for line in exp[2:]:
             yield " " * indent + "or"
-            for l in pprint_logic(line, indent + INDENT_LEN):
+            for l in pprint_logic(line, indent + INDENT_LEN, loops):
                 yield l
 
     else:
