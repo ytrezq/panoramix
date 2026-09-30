@@ -47,10 +47,12 @@ from panoramix.utils.helpers import (
     all_concrete,
     clean_color,
     colorize,
+    contains,
     is_array,
     opcode,
     padded_hex,
     precompiled,
+    replace,
     replace_f,
     replace_lines,
     to_exp2,
@@ -250,7 +252,7 @@ def pprint_logic(exp, indent=2):
             cond, path = exp[1], exp[2]
             vars = []
 
-        for v in vars:
+        for v in sequential_setvars(vars):
             yield " " * indent + list(
                 pretty_line(("setvar", v[1], v[2]), add_color=True)
             )[0]
@@ -613,7 +615,7 @@ def pretty_line(r, add_color=True):
         yield COLOR_GREEN + f"continue {str(rest)}" + ENDC
 
     elif m := match(r, ("continue", ":jd", ":setvars")):
-        for v in m.setvars:
+        for v in sequential_setvars(m.setvars):
             yield str(list(pretty_line(v, add_color=True))[0])
         yield COLOR_GREEN + "continue " + ENDC  # +str(jd)+ENDC
 
@@ -1659,6 +1661,40 @@ def pretty_bytes(size, val, add_color=False, parentheses=False):
         + prettify(val, add_color=add_color, parentheses=False)
         + colorize(")", COLOR_GRAY, add_color)
     )
+
+
+def sequential_setvars(setvars):
+    """
+    The setvars of a continue, one after the other.
+
+    They all happen at once: each one reads the values from before any of
+    them (idx = idx + 1 and s = s + 3 * idx add the idx of the iteration
+    that ends). Printed one per line, they are read one after the other, so
+    one that reads a variable goes before the one that sets it, and when two
+    read each other's (a swap), a copy of one of them is made first.
+    """
+    pending = [sv for sv in setvars if sv[2] != ("var", sv[1])]
+    res = []
+    copies = 0
+    while pending:
+        for i, (_, idx, _val) in enumerate(pending):
+            if not any(
+                contains(other[2], ("var", idx))
+                for j, other in enumerate(pending)
+                if j != i
+            ):
+                res.append(pending.pop(i))
+                break
+        else:
+            _, idx, _val = pending[0]
+            copies += 1
+            copy = ("var", "_old" if copies == 1 else f"_old{copies}")
+            res.append(("setvar", copy[1], ("var", idx)))
+            pending = [pending[0]] + [
+                (op, i2, replace(v2, ("var", idx), copy)) for op, i2, v2 in pending[1:]
+            ]
+
+    return res
 
 
 def pretty_fname(exp, add_color=False, force=False):
