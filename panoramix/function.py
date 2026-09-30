@@ -4,7 +4,8 @@ import logging
 from copy import deepcopy
 
 from panoramix.core.arithmetic import simplify_bool
-from panoramix.core.masks import mask_to_type, type_to_mask
+from panoramix.core.masks import mask_to_type
+from panoramix.core.memloc import byte_elements, keep_width
 from panoramix.matcher import Any, match
 from panoramix.prettify import explain_text, pprint_logic, prettify
 from panoramix.utils.helpers import (
@@ -140,68 +141,96 @@ class Function(EasyCopy):
         self.is_regular = self.const is None and self.getter is None
 
     def cleanup_masks(self, trace):
-        """A param as its type makes it: _param1 rather than address(_param1)."""
+        """
+        A param as it is once it's checked: after `require _param1 ==
+        address(_param1)`, address(_param1) is _param1 - the calldata has no
+        more than an address there. Not before, nor without the check (solc
+        < 0.5 has none): a param is the word of calldata, whatever its type.
+        """
 
-        def rem_masks(exp):
-            if m := match(exp, ("bool", ("cd", ":int:idx"))):
-                idx = m.idx
-                if (
-                    idx in self.inferred_params
-                    and self.inferred_params[idx][0] == "bool"
-                ):
-                    return ("cd", idx)
-
-            elif m := match(
-                exp, ("mask_shl", ":int:size", ":int:off", 0, ("cd", ":int:idx"))
+        def validated(cond):
+            """(cd, x) if cond, true, reverts unless cd == x"""
+            if m := match(cond, ("iszero", ("eq", ":a", ":b"))):
+                for cd, x in ((m.a, m.b), (m.b, m.a)):
+                    if opcode(cd) == "cd" and clean_form(x, cd):
+                        return cd, x
+            if (
+                (m := match(cond, ("mask_shl", ":int:size", ":int:off", 0, ":cd")))
+                and opcode(m.cd) == "cd"
+                and m.size + m.off == 256
+                and m.off > 0
             ):
-                size, off, idx = m.size, m.off, m.idx
-                if idx in self.inferred_params:
-                    kind = self.inferred_params[idx][0]
-                    if kind.startswith("bytes") and kind[5:].isdigit():
-                        # left-aligned
-                        if size == 8 * int(kind[5:]) and off + size == 256:
-                            return ("cd", idx)
-                    elif off == 0 and not kind.startswith("int"):
-                        # (a mask isn't how intN params are made)
-                        def_size = type_to_mask(kind)
-                        if kind.startswith("uint") and kind[4:].isdigit():
-                            def_size = int(kind[4:])
-                        if size == def_size:
-                            return ("cd", idx)
+                # the bits above the type are 0
+                return m.cd, ("mask_shl", m.off, 0, 0, m.cd)
+            return None
 
-            elif m := match(exp, ("signextend", ":int:b", ("cd", ":int:idx"))):
-                idx = m.idx
-                if (
-                    idx in self.inferred_params
-                    and self.inferred_params[idx][0] == f"int{8 * (m.b + 1)}"
-                ):
-                    return ("cd", idx)
+        def clean_form(x, cd):
+            return (
+                match(x, ("mask_shl", Any, 0, 0, cd))
+                or match(x, ("bool", cd))
+                or match(x, ("signextend", Any, cd))
+                or match(x, ("mask_shl", Any, Any, 0, cd))
+            )
 
-            return exp
+        def reverts(branch):
+            return len(branch) == 1 and branch[0] in (("revert", None), ("invalid",))
 
-        def is_validation(exp):
-            # `require _param1 == uint16(_param1)`, that reverts if the
-            # calldata has more than the type allows: without the mask, it
-            # would read as always true.
-            if (m := match(exp, ("eq", ":a", ":b"))) and (
-                opcode(m.a) == "cd" or opcode(m.b) == "cd"
-            ):
-                cd, other = (m.a, m.b) if opcode(m.a) == "cd" else (m.b, m.a)
-                return opcode(other) in ("mask_shl", "bool", "signextend") and (
-                    other[-1] == cd
-                )
-            return False
-
-        def rem(exp, element=False):
-            if type(exp) not in (list, tuple) or is_validation(exp):
+        def subst(exp, known):
+            if not known:
                 return exp
+            if type(exp) not in (list, tuple):
+                return exp
+            if type(exp) == tuple and exp in known:
+                return known[exp]
+            res = type(exp)(subst(e, known) for e in exp)
+            if type(exp) == tuple:
+                # an element of bytes stays as wide as it's written
+                for i in byte_elements(exp):
+                    if res[i] != exp[i]:
+                        res = res[:i] + (keep_width(exp[i], res[i]),) + res[i + 1 :]
+            return res
 
-            # the elements of a data keep their mask: it makes their width
-            is_data = opcode(exp) == "data"
-            res = type(exp)(rem(e, is_data) for e in exp)
-            return res if element else rem_masks(res)
+        def rem(trace, known):
+            res = []
+            for idx, line in enumerate(trace):
+                if m := match(line, ("if", ":cond", ":if_true", ":if_false")):
+                    cond = subst(m.cond, known)
+                    if_true, if_false = m.if_true, m.if_false
+                    v = None
+                    if reverts(if_true):
+                        v = validated(m.cond)
+                        if v:
+                            if_false = rem(if_false, {**known, v[1]: v[0]})
+                            if_true = rem(if_true, known)
+                    elif reverts(if_false) and (
+                        mm := match(m.cond, ("eq", ":a", ":b"))
+                    ):
+                        for cd, x in ((mm.a, mm.b), (mm.b, mm.a)):
+                            if opcode(cd) == "cd" and clean_form(x, cd):
+                                v = cd, x
+                                if_true = rem(if_true, {**known, x: cd})
+                                if_false = rem(if_false, known)
+                                break
+                    if not v:
+                        if_true = rem(if_true, known)
+                        if_false = rem(if_false, known)
+                    res.append(("if", cond, if_true, if_false))
+                elif opcode(line) == "while":
+                    _, cond, path, jd, setvars = line
+                    res.append(
+                        (
+                            "while",
+                            subst(cond, known),
+                            rem(path, known),
+                            jd,
+                            subst(setvars, known),
+                        )
+                    )
+                else:
+                    res.append(subst(line, known))
+            return res
 
-        return rem(trace)
+        return rem(trace, {})
 
     def make_names(self):
         new_name = self.name.split("(")[0]
