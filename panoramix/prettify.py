@@ -1401,7 +1401,8 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         if size == 256 and not may_be_wide(val):
             return pret(val, parentheses=ctx)
 
-        if type(size) == int and size != 256:
+        if type(size) == int and size not in (1, 256):
+            # (the lowest bit of a number isn't a bool: x % 2, below)
             if size == 255:
                 type_name = "uint255"
             else:
