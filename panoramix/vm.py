@@ -84,7 +84,17 @@ def find_nodes(node, f):
     return res
 
 
-MAX_NODE_COUNT = 5_000
+# How many nodes a function is explored in, at most - the timeout of the run
+# (see VM.run) is the other bound. The biggest functions of the contracts we
+# decompile (Seaport's, the Universal Router's execute) take 10,000, most of
+# them one path after the other. Past WIDE_NODE_COUNT, the exploration goes
+# on only while it narrows down - while fewer than one of 16 nodes is still to
+# explore: paths that keep branching (1inch's predicates, which inline each
+# other) make an output too long to read anyway. Finding the functions only
+# (just_fdests) needs the dispatcher, explored first.
+MAX_NODE_COUNT = 20_000
+WIDE_NODE_COUNT = 5_000
+MAX_FDESTS_NODE_COUNT = 5_000
 node_count = 0
 
 
@@ -571,9 +581,15 @@ class VM(EasyCopy):
         """
         time_start = time.monotonic()
 
+        max_nodes = MAX_FDESTS_NODE_COUNT if self.just_fdests else MAX_NODE_COUNT
+        # the nodes still to explore, as last counted
+        frontier = [0]
+
         def should_quit():
-            return node_count > MAX_NODE_COUNT or (
-                timeout and (time.monotonic() - time_start > timeout)
+            return (
+                node_count > max_nodes
+                or (node_count > WIDE_NODE_COUNT and 16 * frontier[0] > node_count)
+                or (timeout and (time.monotonic() - time_start > timeout))
             )
 
         self.should_quit = should_quit
@@ -657,6 +673,7 @@ class VM(EasyCopy):
                 """
 
                 nodes = find_nodes(root, lambda n: n.trace is None)
+                frontier[0] = len(nodes)
 
                 if len(nodes) == 0 or should_quit():
                     break
@@ -676,6 +693,7 @@ class VM(EasyCopy):
                 time.monotonic() - time_start,
             )
 
+        logger.debug("%i nodes, %.2f seconds", node_count, time.monotonic() - time_start)
         tr = root.make_trace()
         if entry:
             tr = apply_entry(entry, tr)
