@@ -47,6 +47,7 @@ from panoramix.core.masks import get_bit, to_mask, to_neg_mask
 from panoramix.core.memloc import (
     apply_mask_to_range,
     fill_mem,
+    max_value_bits,
     memloc_overwrite,
     range_overlaps,
     sizeof,
@@ -447,16 +448,20 @@ def simplify_exp(exp):
         exp = 0
 
     # same thing is added in both expressions ?
-    if (m := match(exp, (":op", ("add", ...), ("add", ...)))) and m.op in (
-        "lt",
-        "le",
-        "gt",
-        "ge",
+    if (
+        (m := match(exp, (":op", ("add", ...), ("add", ...))))
+        and m.op in ("lt", "le", "gt", "ge")
+        and all(max_value_bits(t) <= 250 for t in exp[1][1:] + exp[2][1:])
+        and len(exp[1]) <= 33
+        and len(exp[2]) <= 33
     ):
-        e1 = exp[1][1:]  # first ...
-        e2 = exp[2][1:]  # second ...
-        t1 = tuple(t for t in e1 if t not in e2)
-        t2 = tuple(t for t in e2 if t not in e1)
+        # sums that don't wrap around 2**256 compare as integers do: what
+        # both have can go. Otherwise it can't: x + 1 < x is an overflow.
+        e1 = collections.Counter(exp[1][1:])  # first ...
+        e2 = collections.Counter(exp[2][1:])  # second ...
+        common = e1 & e2
+        t1 = tuple((e1 - common).elements())
+        t2 = tuple((e2 - common).elements())
         exp = (m.op, add_op(*t1), add_op(*t2))
 
     if m := match(exp, ("add", ":e")):

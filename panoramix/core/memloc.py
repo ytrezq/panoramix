@@ -107,6 +107,59 @@ def value_bits(exp):
     return 256
 
 
+# what no execution can make large: sizes of what gas pays for
+BOUNDED_SYMBOLS = {
+    "calldatasize": 64,
+    "returndatasize": 64,
+    "codesize": 64,
+    "msize": 64,
+    "gas": 64,
+}
+
+
+def max_value_bits(exp):
+    """
+    An upper bound of the bit length of exp. Numbers well below 2**256 add
+    up like integers do, without wrapping around (see the comparisons of
+    sums in simplify_exp).
+    """
+    if type(exp) == int:
+        return exp.bit_length() if 0 <= exp < 2**256 else 256
+
+    if type(exp) == str:
+        return BOUNDED_SYMBOLS.get(exp, 256)
+
+    op = opcode(exp)
+
+    if op == "add" and len(exp) > 1:
+        terms = exp[1:]
+        top = max(max_value_bits(t) for t in terms)
+        return min(256, top + (len(terms) - 1).bit_length())
+
+    if op == "mul" and len(exp) > 1:
+        return min(256, sum(max_value_bits(t) for t in exp[1:]))
+
+    if op == "div" and len(exp) == 3:
+        return max_value_bits(exp[1])
+
+    if op == "mod" and len(exp) == 3:
+        return min(max_value_bits(exp[1]), max_value_bits(exp[2]))
+
+    if op == "and" and len(exp) > 1:
+        return min(max_value_bits(t) for t in exp[1:])
+
+    if op in ("or", "xor") and len(exp) > 1:
+        return max(max_value_bits(t) for t in exp[1:])
+
+    if m := match(exp, ("mask_shl", ":int:size", ":int:off", ":int:shl", ":x")):
+        top = min(m.off + m.size, max_value_bits(m.x))
+        if top <= m.off:
+            return 0
+        return max(0, min(top + m.shl, 256))
+
+    return value_bits(exp)
+
+
 def split_or(value):
     orig_value = value
 
