@@ -48,6 +48,7 @@ from panoramix.core.masks import get_bit, to_mask, to_neg_mask
 from panoramix.core.memloc import (
     apply_mask_to_range,
     fill_mem,
+    max_value,
     max_value_bits,
     memloc_overwrite,
     range_overlaps,
@@ -236,6 +237,10 @@ def simplify_trace(trace, timeout=0):
 
     trace = cleanup_mul_1(trace)
 
+    # the conditions readability turned around may be known now: `if not
+    # (1 | x)` is `if 0`
+    trace = cleanup_conds(trace)
+
     return trace
 
 
@@ -355,12 +360,16 @@ def simplify_exp(exp):
         real = 2**256 - 1
         symbols = []
         for t in terms:
-            if type(t) == int and t >= 0:
-                real = real & t
+            if type(t) in (int, bool) and t >= 0:
+                # (False and x: a truth value that is 0)
+                real = real & int(t)
             elif opcode(t) == "and":
                 symbols += t[1:]
             else:
                 symbols.append(t)
+
+        if real == 0:
+            return 0
 
         if real != 2**256 - 1:
             res = (real,)
@@ -368,7 +377,7 @@ def simplify_exp(exp):
             res = tuple()
 
         res += tuple(symbols)
-        exp = ("and",) + res
+        exp = ("and",) + res if len(res) > 1 else res[0] if res else 2**256 - 1
 
     if m := match(exp, ("iszero", ("iszero", ":e"))):
         exp = ("bool", m.e)
@@ -378,6 +387,29 @@ def simplify_exp(exp):
 
     if (m := match(exp, ("eq", ":sth", 0))) or (m := match(exp, ("eq", 0, ":sth"))):
         exp = ("iszero", m.sth)
+
+    if (
+        (m := match(exp, ("eq", ":sth", 1))) or (m := match(exp, ("eq", 1, ":sth")))
+    ) and arithmetic.is_bool(m.sth):
+        # a truth value is 1 when it's true
+        exp = m.sth
+
+    if (m := match(exp, (":op", ":a", ":int:c"))) and m.op in ("lt", "gt", "le", "ge"):
+        # a comparison that what's compared can't make true, or false
+        top = max_value(m.a)
+        c = m.c % 2**256
+        if (m.op == "gt" and top <= c) or (m.op == "ge" and top < c):
+            return 0
+        if (m.op == "lt" and top < c) or (m.op == "le" and top <= c):
+            return 1
+
+    if (m := match(exp, (":op", ":int:c", ":a"))) and m.op in ("lt", "gt", "le", "ge"):
+        top = max_value(m.a)
+        c = m.c % 2**256
+        if (m.op == "lt" and top <= c) or (m.op == "le" and top < c):
+            return 0
+        if (m.op == "gt" and top < c) or (m.op == "ge" and top <= c):
+            return 1
 
     if m := match(exp, (":op", ("mul", -1, ":x"))):
         if m.op in ("iszero", "bool"):

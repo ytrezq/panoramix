@@ -178,6 +178,9 @@ def simplify_bool(exp):
 
 def and_op(*args):
     assert len(args) > 1
+    if any(type(a) in (int, bool) and a == 0 for a in args):
+        # (bitwise or not) 0 and anything is 0
+        return 0
     left = args[0]
 
     if len(args) > 2:

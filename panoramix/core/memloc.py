@@ -160,6 +160,44 @@ def max_value_bits(exp):
     return value_bits(exp)
 
 
+def max_value(exp):
+    """An upper bound of the value of exp, as an unsigned word."""
+    top = 2**256 - 1
+
+    if type(exp) in (int, bool):
+        return int(exp) % 2**256
+
+    op = opcode(exp)
+
+    if op in ("bool", "iszero", "eq", "lt", "gt", "le", "ge", "slt", "sgt", "sle", "sge"):
+        return 1
+
+    if (m := match(exp, ("mod", Any, ":int:c"))) and 0 < m.c < 2**256:
+        return m.c - 1
+
+    if (m := match(exp, ("div", ":x", ":int:c"))) and 0 < m.c < 2**256:
+        return max_value(m.x) // m.c
+
+    if op == "and" and len(exp) > 1:
+        return min(max_value(e) for e in exp[1:])
+
+    if m := match(exp, ("mask_shl", ":int:size", ":int:off", ":int:shl", ":x")):
+        if m.size <= 0:
+            return 0
+        if m.off < 0:
+            return top
+        # x & mask is at most x, and at most the mask (not x's bound & mask:
+        # x <= 4 has x & 3 up to 3, 4 & 3 is 0)
+        bits = min(max_value(m.x), ((1 << m.size) - 1) << m.off)
+        bits = bits << m.shl if m.shl >= 0 else bits >> -m.shl
+        return min(bits, top)
+
+    if (m := match(exp, ("storage", ":int:size", ":int:off", Any))) and m.off >= 0:
+        return (1 << m.size) - 1 if m.size < 256 else top
+
+    return top
+
+
 def split_or(value):
     orig_value = value
 
