@@ -1,20 +1,17 @@
-import collections
 import logging
 
 import panoramix.folder as folder
-import panoramix.sparser as sparser
-from panoramix.matcher import Any, match
+import panoramix.storage as storage
+from panoramix.matcher import match
 from panoramix.prettify import (
     fix_widths,
     pprint_ast,
     pprint_trace,
-    prettify,
     pretty_stor,
 )
 from panoramix.utils.helpers import (
     COLOR_GREEN,
     ENDC,
-    find_f_list,
     opcode,
     replace_f,
     replace_lines,
@@ -23,7 +20,6 @@ from panoramix.utils.helpers import (
 )
 
 from panoramix.function import Function
-from panoramix.sparser import get_loc, get_name
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +52,14 @@ def deserialize(trace):
 
 
 class Contract:
-    def __init__(self, functions, problems):
+    def __init__(self, functions, problems, code=None):
         self.problems = problems
         self.functions = []
         for func in functions.values():
             self.functions.append(func)
 
+        self.code = code
+        self.lang = "solidity"
         self.stor_defs = {}
 
     def json(self) -> dict:
@@ -85,12 +83,16 @@ class Contract:
 
     def postprocess(self):
         try:
-            self.stor_defs = sparser.rewrite_functions(self.functions)
+            self.lang, self.stor_defs = storage.rewrite_functions(
+                self.functions, self.code
+            )
         except Exception:
             # this is critical, because it causes full contract to display very
             # badly, and cannot be limited in scope to just one affected function
             logger.exception("Storage postprocessing failed. This is very bad!")
-            self.stor_defs = {}
+            self.stor_defs = []
+            # the accesses as the slots they are
+            storage.rewrite_raw(self.functions)
 
         for func in self.functions:
 
@@ -111,157 +113,13 @@ class Contract:
         self.make_asts()
 
     def make_asts(self):
-        """
-        we need to do ast creation from the contract, not function level,
-        because some simplifications (type/field removal) require insight to all the functions,
-        not just a single one
-        """
 
         for func in self.functions:
             func.ast = self.make_ast(func.trace)
 
-        def find_stor_masks(exp):
-            if opcode(exp) == "type":
-                return [exp]
-            else:
-                return []
-
-        stor_masks = frozenset(
-            find_f_list([f.ast for f in self.functions], find_stor_masks)
-        )
-
-        stor_loc_to_masks = collections.defaultdict(set)
-        stor_name_to_masks = collections.defaultdict(set)
-        for mask in stor_masks:
-            stor_loc_to_masks[get_loc(mask)].add(mask)
-            stor_name_to_masks[get_name(mask)].add(mask)
-
-        def cleanup(exp):
-            if m := match(exp, ("field", 0, ("stor", ("length", ":idx")))):
-                return ("stor", ("length", m.idx))
-
-            if m := match(
-                exp, ("type", 256, ("field", 0, ("stor", ("length", ":idx"))))
-            ):
-                return ("stor", ("length", m.idx))
-
-            if m := match(exp, ("type", 256, ("stor", ("length", ":idx")))):
-                return ("stor", ("length", m.idx))
-
-            if m := match(
-                exp,
-                (
-                    "type",
-                    ":e_type",
-                    ("field", ":e_field", ("stor", ("name", ":e_name", ":loc"))),
-                ),
-            ):
-                e_type, e_field, e_name, loc = m.e_type, m.e_field, m.e_name, m.loc
-                for mask in stor_name_to_masks[e_name]:
-                    if get_loc(mask) != loc:
-                        logger.error(
-                            "Seems like we have two locations / storages with the same name: %s %s %s",
-                            mask,
-                            loc,
-                            get_loc(mask),
-                        )
-                    assert (
-                        m := match(
-                            mask, ("type", ":m_type", ("field", ":m_field", Any))
-                        )
-                    )
-                    if m.m_field != e_field or m.m_type != e_type:
-                        return exp
-
-                return ("stor", ("name", e_name, loc))
-
-            if m := match(exp, ("type", ":e_type", ":stor")):
-                e_type, stor = m.e_type, m.stor
-                e_loc = get_loc(stor)
-
-                for mask in stor_loc_to_masks[e_loc]:
-                    if not match(
-                        mask, ("type", 256, ("field", 0, ("stor", ("length", Any))))
-                    ):
-                        assert (m := match(mask, ("type", ":m_type", Any)))
-                        if m.m_type != e_type:
-                            return exp
-
-                return stor
-
-            if m := match(exp, ("field", ":e_off", ":stor")):
-                e_off, stor = m.e_off, m.stor
-                e_loc = get_loc(stor)
-
-                for mask in stor_loc_to_masks[e_loc]:
-                    if not match(
-                        mask, ("type", 256, ("field", 0, ("stor", ("length", Any))))
-                    ):
-                        assert (
-                            m := match(mask, ("type", Any, ("field", ":m_off", Any)))
-                        )
-                        if m.m_off != e_off:
-                            return exp
-
-                return stor
-
-            return exp
-
-        for f in self.functions:
-            f.ast = replace_f(f.ast, cleanup)
-
     def make_ast(self, trace):
         trace = folder.fold(trace)
         trace = fix_widths(trace)
-
-        def store_to_set(line):
-            if m := match(line, ("store", ":size", ":off", ":idx", ":val")):
-                return ("set", ("stor", m.size, m.off, m.idx), m.val)
-            else:
-                return line
-
-        def loc_to_name(exp):
-            if m := match(exp, ("loc", ":int:num")):
-                return ("name", sparser.stor_name(m.num), m.num)
-
-            if m := match(exp, ("loc", ":num")):
-                return (
-                    "name",
-                    "stor" + prettify(m.num, add_color=False, parentheses=True),
-                    m.num,
-                )
-
-            return exp
-
-        def arr_rem_mul(exp):
-            if m := match(
-                exp,
-                ("array", ("mask_shl", ":size", ":off", ":int:shl", ":idx"), ":loc"),
-            ):
-                size, off, shl, idx, loc = m.size, m.off, m.shl, m.idx, m.loc
-                r = 2**shl
-                e_loc = get_loc(loc)
-
-                for s in self.stor_defs:
-                    assert match(s, ("def", Any, ":d_loc", ":d_def"))
-                    if match(s, ("def", Any, e_loc, ("array", ("struct", r)))):
-                        return ("array", ("mask_shl", size, off, 0, idx), loc)
-
-            elif m := match(exp, ("array", ("mul", ":int:r", ":idx"), ":loc")):
-                r, idx, loc = m.r, m.idx, m.loc
-                e_loc = get_loc(loc)
-
-                for s in self.stor_defs:
-                    assert match(s, ("def", Any, ":d_loc", ":d_def"))
-                    if match(s, ("def", Any, e_loc, ("array", ("struct", r)))):
-                        return ("array", idx, loc)
-            return exp
-
-        def mask_storage(exp):
-            if m := match(exp, ("stor", ":size", ":off", ":idx")):
-                return ("type", m.size, ("field", m.off, ("stor", m.idx)))
-            else:
-                return exp
 
         def other_1(exp):
             if (
@@ -304,15 +162,14 @@ class Contract:
                 and m.off in range(1, 9)
                 and m.size + m.off in [8, 16, 32, 64, 128, 256]
             ):
+                if opcode(m.e) == "st" and type(m.e[1]) == int and m.e[1] <= m.size + m.off:
+                    # a storage access no wider than the mask's top
+                    return ("div", m.e, 2**m.off)
                 return ("div", ("mask", m.size + m.off, 0, m.e), 2**m.off)
 
             else:
                 return exp
 
-        trace = replace_f(trace, store_to_set)
-        trace = replace_f(trace, loc_to_name)
-        trace = replace_f(trace, arr_rem_mul)
-        trace = replace_f(trace, mask_storage)
         trace = replace_f(trace, other_1)
         trace = replace_f(trace, other_2)
         return trace

@@ -89,14 +89,29 @@ order. An event not known is printed with its whole topic 0:
 
 ## Storage
 
-The `def storage:` header names the storage the functions use:
+The `def storage:` header names the storage the functions use - `def
+storage (vyper):` for Vyper, whose mappings hash the slot, then the key:
 
-- `x is uint8 at storage 3 offset 8`: the bits 8 to 16 of slot 3;
-- `m is mapping of uint256 at storage 5`: `m[k]` is at `keccak(k . 5)` (the
-  key word then the slot word; vyper - `def storage (vyper):` - puts the slot
-  first);
-- `a is array of uint256 at storage 6`: `a.length` is slot 6, `a[i]` at
-  `keccak(6) + i` (packed when its elements are narrower than a word);
-- `.field_N` is the value from the bit `N` of the element on, up to the top of
-  its word unless a cast says how many bits;
-- `stor[e]` is the raw slot `e`, and `storN` the slot `N` with no name.
+- `x is uint8 at storage 3 offset 8`: the bits 8 to 16 of the slot 3. `x`
+  reads as that value; a read of fewer of its bits is a cast (`uint4(x)`)
+  or a shift of it.
+- `m is mapping of T at storage 5`: `m[k]` is at `keccak(k . 5)`, the word
+  of the key then the word of the slot. A key of bytes (a range, a
+  `concat(...)`, a string) is hashed as those bytes.
+- `a is array of T at storage 6`: `a.length` is the word at the slot 6,
+  `a[i]` is at `keccak(6) + i` - `keccak(6) + n * i` for a `struct of n
+  slots`. Values of 8, 16, 32, 64 or 128 bits are packed: `256 / width` of
+  them in a slot, from its lowest bits.
+- `f is fixed array of T at storage 7`: `f[i]` is at `7 + i` (packed, and
+  of structs, the same way).
+- `b is bytes at storage 4`: `b` is the word at the slot 4 (a short bytes or
+  string holds its data and twice its length there, a long one twice its
+  length plus 1), `b[i]` its data word at `keccak(4) + i`, `b.length` its
+  length.
+- `.field_N` of a struct is its value from the bit `N` on: the slot `N /
+  256` after its first one, from the bit `N % 256` of it up to the top of
+  the slot, unless a cast says how many bits.
+- `stor[e]` is the slot `e` itself.
+
+A name of the header is the one of the getter that returns it when there is
+one, else `storN` (`storN_O` for the bits from `O` on of the slot `N`).

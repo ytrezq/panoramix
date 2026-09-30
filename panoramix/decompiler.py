@@ -12,7 +12,8 @@ import panoramix.folder as folder
 from panoramix.contract import Contract
 from panoramix.function import Function
 from panoramix.loader import Loader
-from panoramix.prettify import explain, pprint_repr, pprint_trace, pretty_type
+from panoramix.prettify import explain, pprint_repr, pprint_trace
+from panoramix.storage import pretty_def
 from panoramix.vm import VM
 from panoramix.whiles import make_whiles
 from panoramix.utils.helpers import C, rewrite_trace
@@ -208,6 +209,7 @@ def _decompile_with_loader(loader, only_func_name=None) -> Decompilation:
     contract = Contract(
         problems=problems,
         functions=functions,
+        code=bytes(loader.binary or []),
     )
 
     contract.postprocess()
@@ -258,10 +260,11 @@ def _decompile_with_loader(loader, only_func_name=None) -> Decompilation:
             print()
 
         if len(contract.stor_defs) > 0:
-            print(f"{C.green}def {C.end}storage:")
+            lang = " (vyper)" if contract.lang == "vyper" else ""
+            print(f"{C.green}def {C.end}storage{lang}:")
 
             for s in contract.stor_defs:
-                print(pretty_type(s))
+                print(pretty_def(s))
 
             print()
 

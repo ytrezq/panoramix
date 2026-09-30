@@ -914,6 +914,24 @@ def pretty_type(t):
         assert False, f"unknown type {t}"
 
 
+def pretty_loc(loc, add_color=True):
+    """a place of the storage (see storage.py): name[key].field_n, stor[slot]"""
+    col = partial(colorize, color=COLOR_GREEN, add_color=add_color)
+    pret = partial(prettify, parentheses=False, add_color=add_color)
+    op = loc[0]
+    if op == "sv":
+        return col(loc[1])
+    if op == "si":
+        return pretty_loc(loc[1], add_color) + col("[") + pret(loc[2]) + col("]")
+    if op in ("sl", "sbl"):
+        return pretty_loc(loc[1], add_color) + col(".length")
+    if op == "sf":
+        return pretty_loc(loc[1], add_color) + col(".field_") + pret(loc[2])
+    if op == "sr":
+        return col("stor[") + pret(loc[1]) + col("]")
+    return str(loc)
+
+
 def pretty_stor(exp, add_color=True):
     col = partial(colorize, color=COLOR_GREEN, add_color=add_color)
     stor = partial(pretty_stor, add_color=add_color)
@@ -1320,6 +1338,28 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         and m.offset == 0
     ):
         return pret(("stor", m.s_size, m.s_off, m.s_idx))
+
+    if (
+        (m := match(exp, ("mask_shl", ":int:size", ":int:off", ":int:shl", ":val")))
+        and opcode(m.val) == "st"
+        and type(m.val[1]) == int
+        and 0 < m.off == -m.shl
+        and m.val[1] <= m.off + m.size
+    ):
+        # a storage access of fewer bits than the mask's top: its bits from
+        # off on, x >> off
+        if m.off < 8:
+            return pret(("div", m.val, 2**m.off), parentheses=ctx)
+        op_form = COLOR_BOLD + " >> " + ENDC if add_color else " >> "
+        return wrap(operand(m.val, SHIFT) + op_form + pret(m.off), SHIFT)
+
+    if m := match(exp, ("st", ":size", ":loc", ":width")):
+        # an access of the storage (see storage.py)
+        text = pretty_loc(m.loc, add_color)
+        if m.size == m.width or m.width is None:
+            return text
+        name = "address" if m.size == 160 else f"uint{pret(m.size)}"
+        return col(name + "(", COLOR_GRAY) + text + col(")", COLOR_GRAY)
 
     if opcode(exp) == "stor":
         return pretty_stor(exp, add_color=add_color)
@@ -1985,8 +2025,8 @@ def with_width(el):
     """
     if sized(el):
         return el
-    if m := match(el, ("stor", ":size", ":off", Any)):
-        # a field of the storage (see sparser): as wide as it is
+    if m := match(el, ("st", ":size", Any, Any)):
+        # an access of the storage (see storage.py): as wide as it reads
         width = m.size
     else:
         width = sizeof(el)
