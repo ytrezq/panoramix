@@ -1492,20 +1492,10 @@ class VM(EasyCopy):
 
         elif op == "balance":
             addr = stack.pop()
-            if addr[:4] == ("mask_shl", 160, 0, 0):
-                stack.append(
-                    (
-                        "balance",
-                        addr[4],
-                    )
-                )
-            else:
-                stack.append(
-                    (
-                        "balance",
-                        addr,
-                    )
-                )
+            if opcode(addr) == "mask_shl" and addr[1:4] == (160, 0, 0):
+                # (the address: the low 160 bits of the word, as printed)
+                addr = addr[4]
+            stack.append(("balance", addr))
 
         elif op == "swap":
             stack.swap(param)
