@@ -386,6 +386,15 @@ def simplify_exp(exp):
         # a xor b is 0 when they're equal
         exp = ("eq", m.a, m.b)
 
+    if m := match(exp, ("call.data", ":int:pos", 32)):
+        # a word of the calldata
+        return ("cd", m.pos)
+
+    if m := match(exp, ("call.data", "calldatasize", ":int:size")):
+        # past the end of the calldata: zeroes (Vyper copies them to clear
+        # the memory)
+        return ("bytes", m.size, 0)
+
     if (m := match(exp, ("iszero", ("add", ":int:c", ":x")))) and len(exp[1]) == 3:
         exp = equals(m.x, m.c)
 
