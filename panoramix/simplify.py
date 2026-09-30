@@ -1968,6 +1968,12 @@ def replace_mem(trace, mem_idx, mem_val):
                 return res
 
         elif affects(line, mem_val) or affects(line, mem_id):
+            if opcode(line) in ("call", "staticcall", "delegatecall", "callcode"):
+                # what it's called with is read before it runs, and changes
+                # anything
+                res.append(replace_mem_exp(line, mem_idx, mem_val))
+                res.extend(copy(trace[idx + 1 :]))
+                return res
             res.extend(copy(trace[idx:]))
             return res
 
