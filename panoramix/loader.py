@@ -137,6 +137,14 @@ def selector_test(cond):
         res = selector_test(cond[1])
         return res and (res[0], not res[1])
 
+    if opcode(cond) in ("and", "or"):
+        # the selector is the hash and something else holds (Vyper's
+        # dispatchers from 0.3.10: calldata.size > 3) - or, negated, it isn't
+        # or something else doesn't: the function where it is
+        taken = opcode(cond) == "and"
+        tests = [t for t in map(selector_test, cond[1:]) if t and t[1] == taken]
+        return tests[0] if len(tests) == 1 else None
+
     if opcode(cond) in ("eq", "xor") and len(cond) == 3:
         for num, other in ((cond[1], cond[2]), (cond[2], cond[1])):
             if type(num) is int and str(("cd", 0)) in str(other):

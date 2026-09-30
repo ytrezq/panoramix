@@ -4,7 +4,7 @@ import time
 import sys
 from copy import copy
 
-from panoramix.core import arithmetic, variants
+from panoramix.core import algebra, arithmetic, variants
 import panoramix.utils.opcode_dict as opcode_dict
 from panoramix.core.algebra import (
     add_op,
@@ -40,10 +40,12 @@ from panoramix.utils.helpers import (
     all_concrete,
     contains,
     exp_size,
+    find_op_list,
     get_op,
     opcode,
     precompiled,
     precompiled_var_names,
+    replace,
     replace_f_stop,
 )
 
@@ -334,7 +336,8 @@ def write_memory(known, rng, value):
     if size == 0:
         return known
 
-    if size not in (1, 32):
+    if size not in (1, 32) and not (type(value) is int and size < 32):
+        # (a number of size bytes - codecopy's - is kept)
         value = None
 
     if value is not None and get_op(value, "mem") is not None:
@@ -651,10 +654,37 @@ class Node:
             n.set_prev(self)
 
         if opcode(last) == "if":
-            if_true, if_false = last[2], last[3]
+            link_if(self, last)
 
-            if_true.set_prev(self)
-            if_false.set_prev(self)
+
+def switch_values(exp):
+    """
+    (x, its values) for a part x of exp of a few values: x % n, or a few of
+    the bits of something (x & 1 is how Vyper's dispatcher takes x % 2) -
+    see VM.code_switch. None if exp has none.
+    """
+    for m in find_op_list(exp, "mod"):
+        if len(m) == 3 and type(m[2]) is int and 2 <= m[2] <= 256:
+            return m, range(m[2])
+    for m in find_op_list(exp, "mask_shl"):
+        if (
+            len(m) == 5
+            and all(type(e) is int for e in m[1:4])
+            and 1 <= m[1] <= 8
+            and m[2] + m[3] >= 0
+            and type(m[4]) is not int
+        ):
+            return m, [k << (m[2] + m[3]) for k in range(2 ** m[1])]
+    return None
+
+
+def link_if(node, line):
+    """The branches of the if `line` that ends node's trace go on from it -
+    and so do those of the ifs made in between (see VM.code_switch)."""
+    for child in line[2:4]:
+        child.set_prev(node)
+        if child.trace and opcode(child.trace[-1]) == "if":
+            link_if(child, child.trace[-1])
 
 
 class VM(EasyCopy):
@@ -984,6 +1014,11 @@ class VM(EasyCopy):
                 # merged into another node during this pass
                 continue
 
+            if getattr(node, "switched", False):
+                # a path of a switch (see code_switch), where what it copies
+                # is known: merged, it wouldn't be any more
+                continue
+
             if len(by_jd[node.jd]) < 2 or self.ends_execution(node.jd[0]):
                 # nothing to merge with, or no point (e.g. a shared revert block)
                 continue
@@ -1284,6 +1319,71 @@ class VM(EasyCopy):
 
         assert False
 
+    def code_switch(self, i):
+        """
+        A codecopy of a few bytes of the code from where one of few numbers
+        says - x % n: Vyper's dispatcher (0.3.10 on) copies from a table
+        where the code of a selector is, and jumps there. One path for each
+        of the values, where the copy is from a known place: `if x % n ==
+        0: ... else: if x % n == 1: ...`, the last without its test (the
+        ifs in between are made here, see link_if). None if it's not that,
+        or when x % n is known.
+        """
+        stack = self.stack.stack
+        if len(stack) < 3:
+            return None
+        mem_pos, code_pos, size = stack[-1], stack[-2], stack[-3]
+        if not (type(mem_pos) is int and type(size) is int and size <= 32):
+            return None
+
+        if type(code_pos) is int:
+            return None
+        switch = switch_values(code_pos)
+        if switch is None:
+            return None
+        m, values = switch
+
+        cases = [k for k in values if is_known(("eq", m, k), self.known) is not False]
+        for fact in self.known:
+            if match(fact, ("eq", m, ":int:k")):
+                cases = [fact[2]]
+
+        def value(k):
+            # the stack where x % n is k
+            return [algebra.simplify(replace(e, m, k)) for e in stack]
+
+        if len(cases) < 2:
+            if cases:
+                self.stack.stack = value(cases[0])
+            return None
+
+        nodes = []
+        for k in cases:
+            cond = ("eq", m, k)
+            n = Node(
+                self,
+                start=i,
+                safe=True,
+                stack=tuple(value(k)),
+                condition=cond,
+                known=self.known + (cond,),
+            )
+            # (not to be merged again, see merge_branches)
+            n.switched = True
+            nodes.append((cond, n))
+
+        rest = nodes[-1][1]
+        for cond, n in reversed(nodes[1:-1]):
+            rest = Node(
+                self,
+                start=("switch", i, cond[2]),
+                safe=True,
+                stack=tuple(stack),
+                trace=[("if", cond, n, rest)],
+                known=self.known,
+            )
+        return [("if", nodes[0][0], nodes[0][1], rest)]
+
     def handle_jumps(self, trace, line, condition):
         i, op = line[0], line[1]
         stack = self.stack
@@ -1313,6 +1413,9 @@ class VM(EasyCopy):
             "revert",
         ):
             logger.debug("[%s] %s", i, op)
+
+        if op == "codecopy" and (switch := self.code_switch(i)):
+            return trace + switch
 
         if op == "jump":
             target = stack.pop()
