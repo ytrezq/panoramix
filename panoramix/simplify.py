@@ -870,9 +870,39 @@ def cleanup_mask_data(exp):
     return exp
 
 
-def replace_while_var(rest, counter_idx, new_idx):
-    while contains(rest, ("var", new_idx)):
+def var_ids(exp, res=None):
+    """The ids of the variables exp (a trace, a line...) reads or sets."""
+    if res is None:
+        res = set()
+    if type(exp) in (list, tuple):
+        if len(exp) >= 2 and exp[0] in ("var", "setvar") and type(exp[1]) is int:
+            res.add(exp[1])
+        for e in exp:
+            var_ids(e, res)
+    return res
+
+
+def has_loop(trace):
+    """Whether there's a loop in the trace."""
+    return any(
+        opcode(line) == "while"
+        or (opcode(line) == "if" and any(has_loop(branch) for branch in line[2:]))
+        for line in trace
+    )
+
+
+def replace_while_var(rest, counter_idx, new_idx, taken=None):
+    """
+    rest, with the variable counter_idx renamed to the first from new_idx
+    no other variable has - taken: those read or set in rest and around it
+    (the loops it's in, what comes after the ifs it's in). One that's set
+    there and never read would be printed with the same name, and read as it.
+    """
+    if taken is None:
+        taken = var_ids(rest)
+    while new_idx in taken and new_idx != counter_idx:
         new_idx += 1
+    taken.add(new_idx)
 
     def r(exp):
         if exp == ("var", counter_idx):
@@ -905,12 +935,14 @@ def canonise_max(exp):
 assert canonise_max(("max", ("mul", 1, ("x", "y")), 4)) == ("max", 4, ("x", "y"))
 
 
-def readability(trace):
+def readability(trace, outer=frozenset()):
     """
     - replaces variable names with nicer ones,
     - fixes empty memory in calls
     - replaces 'max..' in setmems with msize variable
         (max can only appear because of this)
+
+    outer: the variables used around the trace (see replace_while_var).
     """
 
     trace = replace_f(trace, canonise_max)
@@ -927,19 +959,25 @@ def readability(trace):
                         return [replace(line, m, ("var", "_msize"))]
 
                     rest = rewrite_trace(trace[idx:], x)
-                    res.extend(readability(rest))
+                    res.extend(readability(rest, outer))
                     return res
 
         elif m := match(line, ("if", ":cond", ":if_true", ":if_false")):
             cond, if_true, if_false = m.cond, m.if_true, m.if_false
 
+            # (a variable of a loop in a branch mustn't be one that's used
+            # after the if)
+            around = outer
+            if has_loop(if_true) or has_loop(if_false):
+                around = outer | var_ids(trace[idx + 1 :])
+            if_true = readability(if_true, around)
+            if_false = readability(if_false, around)
+
             # if if_false ~ [('revert', ...)]: # no lists in Tilde... yet :,)
             if len(if_false) == 1 and opcode(if_false[0]) == "revert":
-                res.append(
-                    ("if", is_zero(cond), readability(if_false), readability(if_true))
-                )
+                res.append(("if", is_zero(cond), if_false, if_true))
             else:
-                res.append(("if", cond, readability(if_true), readability(if_false)))
+                res.append(("if", cond, if_true, if_false))
 
             continue
 
@@ -949,10 +987,11 @@ def readability(trace):
             a = parse_counters(line)
 
             rest = trace[idx:]
+            taken = var_ids(rest) | outer
 
             if "counter" in a:
                 counter_idx = a["counter"]
-                rest, _ = replace_while_var(rest, counter_idx, 0)
+                rest, _ = replace_while_var(rest, counter_idx, 0, taken)
 
             else:
                 counter_idx = -1
@@ -963,15 +1002,17 @@ def readability(trace):
 
             for _, v_idx, _ in vars:
                 if v_idx != counter_idx:
-                    rest, new_idx = replace_while_var(rest, v_idx, new_idx)
+                    rest, new_idx = replace_while_var(rest, v_idx, new_idx, taken)
 
             line, rest = rest[0], rest[1:]
             cond, path, jds, vars = line[1:]
 
-            path = readability(path)
+            # (the loops in it: not the variables of this one, nor what's
+            # used after it)
+            path = readability(path, outer | var_ids(line) | var_ids(rest))
             res.append(("while", cond, path, jds, vars))
 
-            res.extend(readability(rest))
+            res.extend(readability(rest, outer))
             return res
 
         res.append(line)
