@@ -63,6 +63,7 @@ from panoramix.core.memloc import (
     split_store,
     splits_mem,
     value_bits,
+    width_of,
 )
 from panoramix.matcher import Any, match
 from panoramix.prettify import (
@@ -308,11 +309,13 @@ def simplify_bytes(exp):
 def data_elements(res):
     """
     The elements of a data without "bytes" when they're as wide as their
-    value, zeroes followed by a value merged into it, and zeroes into one.
+    value, zeroes followed by a value merged into it, and zeroes into one -
+    and without the ones of no bytes (a range of length 0).
     """
     res = [
         e[2] if opcode(e) == "bytes" and e[2] != 0 and implicit(e[2], bits(e[1])) else e
         for e in res
+        if width_of(e) != 0
     ]
 
     def zeroes(e):
@@ -494,7 +497,9 @@ def simplify_exp(exp):
         exp = m.single
 
     if m := match(exp, ("mem", ("range", Any, 0))):
-        return None  # sic. this happens usually in params to logs etc, we probably want None here
+        # no data: the params of a log, of a call... (in a data, no part of
+        # it - and not a number)
+        return None
 
     if (
         (m := match(exp, ("mod", ":exp2", ":int:num")))
@@ -607,7 +612,11 @@ def simplify_exp(exp):
         for e in params:
             # (removes further nested datas, and does other simplifications;
             # each as wide as it was)
-            e = keep_width(e, simplify_exp(e))
+            new = simplify_exp(e)
+            if new is None and opcode(e) == "mem":
+                # a range of length 0 (see below): no bytes
+                continue
+            e = keep_width(e, new)
             if opcode(e) == "bytes":
                 e = as_bytes(e)
             if opcode(e) == "data":
