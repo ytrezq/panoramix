@@ -176,7 +176,7 @@ def postprocess_trace(line):
                 return [exp]
 
         true_arr = find_f_list(if_true, find_arr_l)
-        false_arr = find_f_list(if_true, find_arr_l)
+        false_arr = find_f_list(if_false, find_arr_l)
 
         if len(true_arr) > 0 and len(true_arr) == len(false_arr):
             return if_true
@@ -191,7 +191,7 @@ def postprocess_trace(line):
                 return [exp]
 
         true_arr = find_f_list(if_true, find_arr_l)
-        false_arr = find_f_list(if_true, find_arr_l)
+        false_arr = find_f_list(if_false, find_arr_l)
 
         if len(true_arr) > 0 and len(true_arr) == len(false_arr):
             return if_true
@@ -203,10 +203,8 @@ def postprocess_trace(line):
         e.g. 0xf97187f566eC6374cB08470CCe593fF0Dd36d8A9, baseURI
              0xFcD0d8E3ae34922A2921f7E7065172e5317f8ad8, name
 
-        The below hides the cases for < 31, and for 0, and shows only for >31. Technically incorrect,
-        and I'm not super comfortable with this, but some of the code would be very unreadable without it.
-
-
+        When it's longer than 31 bytes, it isn't empty: the check that it is
+        can go.
     """
 
     if m := match(line, ("if", ("lt", 31, ":some_len"), ":if_true", ":if_false")):
@@ -225,102 +223,8 @@ def postprocess_trace(line):
                     )
                 )
             ):
-                return [first] + m.deep_false + rest
-
-    if (
-        m := match(
-            line,
-            (
-                "if",
-                (
-                    "iszero",
-                    (
-                        "mask_shl",
-                        255,
-                        1,
-                        0,
-                        (
-                            "and",
-                            ("storage", 256, 0, ":loc"),
-                            (
-                                "add",
-                                -1,
-                                (
-                                    "mask_shl",
-                                    248,
-                                    0,
-                                    8,
-                                    ("iszero", ("storage", 1, 0, ":loc")),
-                                ),
-                            ),
-                        ),
-                    ),
-                ),
-                ":if_true",
-                ":if_false",
-            ),
-        )
-    ) or (
-        m := match(
-            line,
-            (
-                "if",
-                (
-                    "iszero",
-                    (
-                        "mask_shl",
-                        255,
-                        1,
-                        0,
-                        (
-                            "and",
-                            (
-                                "add",
-                                -1,
-                                (
-                                    "mask_shl",
-                                    248,
-                                    0,
-                                    8,
-                                    ("iszero", ("storage", 1, 0, ":loc")),
-                                ),
-                            ),
-                            ("storage", 256, 0, ":loc"),
-                        ),
-                    ),
-                ),
-                ":if_true",
-                ":if_false",
-            ),
-        )
-    ):
-        if_true, if_false, loc = m.if_true, m.if_false, m.loc
-
-        if len(if_false) == 1:
-            first = if_false[0]
-
-            if (
-                m := match(
-                    first,
-                    (
-                        "if",
-                        ("lt", 31, ("storage", 256, 0, ("length", loc))),
-                        ":deep_true",
-                        ":deep_false",
-                    ),
-                )
-            ) or (
-                m := match(
-                    first,
-                    (
-                        "if",
-                        ("lt", 31, ("storage", 256, 0, ("length", ("loc", loc)))),
-                        ":deep_true",
-                        ":deep_false",
-                    ),
-                )
-            ):
-                return m.deep_true
+                if_true = [first] + m.deep_false + rest
+                return [("if", ("lt", 31, some_len), if_true, if_false)]
 
     return [line]
 
