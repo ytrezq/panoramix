@@ -382,6 +382,10 @@ def simplify_exp(exp):
             # -x is 0 when x is
             exp = (m.op, m.x)
 
+    if m := match(exp, ("iszero", ("xor", ":a", ":b"))):
+        # a xor b is 0 when they're equal
+        exp = ("eq", m.a, m.b)
+
     if (m := match(exp, ("iszero", ("add", ":int:c", ":x")))) and len(exp[1]) == 3:
         exp = equals(m.x, m.c)
 
@@ -1368,6 +1372,9 @@ def truth(cond):
 
     if eq := difference_eq(cond):
         return is_zero(eq)
+
+    if m := match(cond, ("xor", ":a", ":b")):
+        return is_zero(("eq", m.a, m.b))
 
     return cond
 
