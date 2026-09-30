@@ -1328,6 +1328,9 @@ def cleanup_conds(trace):
             elif not if_true and not if_false:
                 # can happen once the branches of a merged if got simplified
                 pass
+            elif if_true == if_false:
+                # whatever the condition
+                res.extend(if_true)
             elif not if_true:
                 res.append(("if", is_zero(cond), if_false, []))
             else:
