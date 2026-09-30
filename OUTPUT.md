@@ -92,7 +92,13 @@ how wide it is:
   type in the signature doesn't clean it. Where it's used cleaned, it's after
   the function checks it (`require _param1 == address(_param1)`), which
   proves the calldata held no more than that.
-- `call.func_hash` is the selector; `calldata.size` the size of the calldata.
+- The word of a bytes, a string or an array param `p` is where its data is,
+  from the byte 4 on: `p.length` is the word of calldata at `4 + p`, `p[all]`
+  the `p.length` bytes from `36 + p`. A word of a param that's a struct or
+  an array of a fixed size is named after it: `desc.amount`, `amounts[2]`.
+- `cd[a]` is the word of calldata at `a`, `calldata.size` the size of the
+  calldata, `call.func_hash` its 4 first bytes in place (at the top of a
+  word: `call.func_hash >> 224` is the selector).
 - A struct in a signature is the types it's made of, `(uint8,bytes32,bytes32)
   sig`: the selector is the hash of the signature with them.
 - An external call is `call x.f(...) with:` (CALL), `static call` (STATICCALL),
@@ -118,6 +124,23 @@ how wide it is:
   where a param or a storage variable is `signer`), `ecrecover.result` its
   success (`memcopy.success` for `identity`), and `return_data.size` and
   `ext_call.return_data` are what it returned.
+
+## What the EVM gives
+
+- `caller`, `tx.origin`, `call.value`, `this.address`, `tx.gasprice`,
+  `gas_remaining` (GAS), `chainid`, `msize` (the bytes of memory used);
+  `block.number`, `block.timestamp`, `block.coinbase`, `block.difficulty`
+  (PREVRANDAO), `block.gas_limit`, `block.basefee`, `block.blobbasefee`,
+  `blobhash(i)`, `block.hash(n)` (0 but for the 256 blocks before this one).
+- `code.data[a len n]` is the contract's own code, `call.data[a len n]` the
+  calldata (zeroes past their ends).
+- `transient[k]` is the word of the transient storage at `k`.
+- `addmod(a, b, n)`, `mulmod(a, b, n)` are the EVM's (0 for an `n` of 0);
+  `True` and `False` are 1 and 0.
+- `create contract with v wei` (and its `code:`) and `create2 contract with v
+  wei` (and its `salt:`) make a contract, `create.new_address` /
+  `create2.new_address` its address (0 if it failed); `selfdestruct(x)` ends
+  the call, sending the balance to `x`.
 
 ## Events
 

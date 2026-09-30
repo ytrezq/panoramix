@@ -1322,7 +1322,8 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         return col("transient[", COLOR_GRAY) + pret(m.key) + col("]", COLOR_GRAY)
 
     if exp == "gasprice":
-        return "block.gasprice"
+        # (of the transaction)
+        return "tx.gasprice"
 
     if exp == "timestamp":
         return "block.timestamp"
