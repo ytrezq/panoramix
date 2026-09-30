@@ -40,6 +40,7 @@ from panoramix.utils.helpers import (
     all_concrete,
     contains,
     exp_size,
+    get_op,
     opcode,
     precompiled,
     precompiled_var_names,
@@ -335,6 +336,13 @@ def write_memory(known, rng, value):
 
     if size not in (1, 32):
         value = None
+
+    if value is not None and get_op(value, "mem") is not None:
+        # a read of memory (mcopy's), done before the write: what the memory
+        # has there then - the write may change it (mcopy(0x90, 0x80, 32)),
+        # or a later one - not the read
+        m = match(value, ("mem", ("range", ":int:src", 32)))
+        value = read_memory(known, m.src) if m and size == 32 else None
 
     end = start + size
     res = []
