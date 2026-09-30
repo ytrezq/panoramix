@@ -11,7 +11,7 @@ def type_to_mask(s):
         "uint32": 32,
         "uint64": 64,
         "int8": 8,
-        "bytes1": 1,
+        "bytes1": 8,
         "int16": 16,
         "bytes2": 16,
         "int32": 32,
