@@ -7,6 +7,7 @@ from panoramix.core import arithmetic
 import panoramix.utils.opcode_dict as opcode_dict
 from panoramix.core.algebra import (
     add_op,
+    apply_mask,
     bits,
     lt_op,
     mask_op,
@@ -124,13 +125,122 @@ STATE_CHANGING_OPS = (
 MAX_CODECOPY_SIZE = 1024
 
 
+"""
+
+    What's in memory.
+
+    A run that starts at the beginning of the code (the dispatcher, or the
+    default function when it's all of the dispatcher) starts with a memory
+    of zeroes: ("memory_fresh",) is known. What the path writes at a known
+    place is known too, ("memory", start, size, value) - the value of a word,
+    or a byte, None for the other writes - and a word read from there is
+    that, not a variable. That's how Vyper (up to 0.2) reads the selector:
+    it writes the calldata at 28, and reads the word at 0.
+
+    Nothing else writes to the memory, not even a call (but where its
+    result goes): they stay known until a write to their place, or to a
+    place that isn't known. A loop may write anywhere, see set_label.
+
+"""
+
+MEMORY_FACTS = ("memory", "memory_fresh")
+
+
+def mask_value(value, size, offset=0, shl=0):
+    """mask_op, that also computes a number, and leaves a word as it is."""
+    if (size, offset, shl) == (256, 0, 0):
+        return value
+    if type(value) == int:
+        return apply_mask(value, size, offset, shl)
+    return mask_op(value, size=size, offset=offset, shl=shl)
+
+
+def write_memory(known, rng, value):
+    """What's known once value is written to the memory range rng."""
+    start, size = rng[1], rng[2]
+    if type(start) != int or type(size) != int:
+        # anywhere
+        return tuple(fact for fact in known if opcode(fact) not in MEMORY_FACTS)
+
+    if size == 0:
+        return known
+
+    if size not in (1, 32):
+        value = None
+
+    end = start + size
+    res = []
+    for fact in known:
+        if opcode(fact) != "memory" or fact[1] + fact[2] <= start or end <= fact[1]:
+            res.append(fact)
+            continue
+
+        # what the write leaves of a value written before, on each side
+        _, f_start, f_size, f_value = fact
+        f_end = f_start + f_size
+        if f_start < start:
+            n, off = start - f_start, 8 * (f_end - start)
+            v = f_value and mask_value(f_value, 8 * n, off, -off)
+            res.append(("memory", f_start, n, v))
+        if end < f_end:
+            n = f_end - end
+            v = f_value and mask_value(f_value, 8 * n)
+            res.append(("memory", end, n, v))
+
+    return tuple(res) + (("memory", start, size, value),)
+
+
+def read_memory(known, addr):
+    """The word at addr, if what's there is known, None otherwise."""
+    if type(addr) != int or not any(opcode(f) in MEMORY_FACTS for f in known):
+        return None
+
+    end = addr + 32
+    res, covered = 0, 0
+    for fact in known:
+        if opcode(fact) != "memory":
+            continue
+        _, start, size, value = fact
+        lo, hi = max(start, addr), min(start + size, end)
+        if lo >= hi:
+            continue
+        if value is None:
+            return None
+
+        # the bytes lo..hi of the value of the bytes start..start + size, to
+        # their place in the word
+        off = 8 * (start + size - hi)
+        res = or_op(res, mask_value(value, 8 * (hi - lo), off, 8 * (end - hi) - off))
+        covered += hi - lo
+
+    if covered < 32 and ("memory_fresh",) not in known:
+        return None
+
+    return res
+
+
 def forget(known, names):
-    return tuple(fact for fact in known if not mentions(fact, names))
+    """
+    What's still known once what the names read may have changed. What's
+    in memory only changes by the writes to it (see write_memory), even at
+    a call: a fact about it goes when its value reads something that changed.
+    """
+    return tuple(
+        fact
+        for fact in known
+        if not (
+            mentions(fact[3], names)
+            if opcode(fact) == "memory"
+            else opcode(fact) != "memory_fresh" and mentions(fact, names)
+        )
+    )
 
 
 def is_known(exp, known):
     """Evaluate `exp` to True/False if it is decided by the known conditions, None otherwise."""
     for fact in reversed(known):
+        if opcode(fact) in MEMORY_FACTS:
+            continue
         res = arithmetic.eval_bool(exp, fact, symbolic=False)
         if res is not None:
             return res
@@ -270,7 +380,11 @@ class Node:
         # here (its checks are made again, and the first iteration is no
         # longer decompiled on its own). And what we learned about the state
         # before the loop doesn't necessarily hold for the next iterations.
-        self.known = forget(loop_dest.known, VOLATILE)
+        self.known = tuple(
+            fact
+            for fact in forget(loop_dest.known, VOLATILE)
+            if opcode(fact) not in MEMORY_FACTS
+        )
 
     def set_prev(self, prev):
         self.prev = prev
@@ -359,6 +473,8 @@ class VM(EasyCopy):
         else:
             before = []
             known = tuple(known) + entry_known(entry)
+            if start == 0 and len(entry) == 0:
+                known += (("memory_fresh",),)
 
         func_node = Node(
             vm=self, start=start, safe=True, stack=list(stack), known=tuple(known)
@@ -756,6 +872,15 @@ class VM(EasyCopy):
             fact for fact in hits[0].known if all(fact in h.known for h in hits[1:])
         )
 
+        # and what only some of them wrote in memory isn't (not even that
+        # it's still zero)
+        for h in hits:
+            for fact in h.known:
+                if opcode(fact) == "memory" and fact not in known:
+                    unknown = ("memory", fact[1], fact[2], None)
+                    if unknown not in known:
+                        known += (unknown,)
+
         node = Node(
             self,
             start=jd[0],
@@ -1002,6 +1127,8 @@ class VM(EasyCopy):
                 ret.append(exp.format(*format_args))
             else:
                 ret.append(exp)
+                if opcode(exp) == "setmem":
+                    self.known = write_memory(self.known, exp[1], exp[2])
 
         stack = self.stack
 
@@ -1230,10 +1357,13 @@ class VM(EasyCopy):
         elif op == "mload":
             memloc = stack.pop()
 
-            self.counter += 1
-            vname = f"_{self.counter}"
-            trace(("setvar", vname, ("mem", ("range", memloc, 32))))
-            stack.append(("var", vname))
+            if (val := read_memory(self.known, memloc)) is not None:
+                stack.append(val)
+            else:
+                self.counter += 1
+                vname = f"_{self.counter}"
+                trace(("setvar", vname, ("mem", ("range", memloc, 32))))
+                stack.append(("var", vname))
 
         elif op == "mstore":
             memloc = stack.pop()
