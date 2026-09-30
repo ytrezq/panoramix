@@ -796,6 +796,10 @@ def pretty_type(t):
     elif t == ("struct", 1):
         return "struct"
 
+    elif t == "bytes":
+        # a string has the same storage
+        return "bytes"
+
     elif t == "struct":
         return "struct"
 

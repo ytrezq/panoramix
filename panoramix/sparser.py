@@ -250,18 +250,22 @@ def rewrite_functions(functions):
             ):
                 continue
 
+            if not match(l, ("stor", int, int, Any)):
+                # a field at an offset computed at runtime
+                continue
+
             name = get_name(l)
             if name is None:
                 name = stor_name(loc)
 
             if m := match(l, ("stor", int, int, ":idx")):
                 idx = m.idx
-                if opcode(idx) == "map":
-                    defs.append(
-                        ("def", name, loc, ("mapping", get_type(stordefs[loc])))
-                    )
-                elif opcode(idx) in ("array", "length"):
-                    defs.append(("def", name, loc, ("array", get_type(stordefs[loc]))))
+                if opcode(idx) in ("map", "array", "length"):
+                    t = loc_type(stordefs[loc])
+                    if t is None:
+                        kind = "mapping" if opcode(idx) == "map" else "array"
+                        t = (kind, get_type(stordefs[loc]))
+                    defs.append(("def", name, loc, t))
 
             break
 
@@ -269,6 +273,10 @@ def rewrite_functions(functions):
         else:
             # all stor references are not arrays/maps, let's just print them out
             for l in sort(stordefs[loc]):
+                if not match(l, ("stor", int, int, Any)):
+                    # a field at an offset computed at runtime
+                    continue
+
                 name = get_name(l)
 
                 if name is None:
@@ -277,6 +285,83 @@ def rewrite_functions(functions):
                 defs.append(("def", name, loc, ("mask", l[1], l[2])))
 
     return defs
+
+
+def access_chain(idx):
+    """
+    How the storage idx is reached from its variable: the mappings and arrays
+    in the way, from the variable on - None if it's not only that.
+    """
+    ops = []
+    while opcode(idx) in ("map", "array", "length"):
+        if opcode(idx) == "length":
+            # the slot of the array itself
+            idx = idx[1]
+            continue
+
+        if len(idx) != 3:
+            return None
+        ops.append(opcode(idx))
+        idx = idx[2]
+
+    if opcode(idx) not in ("loc", "name"):
+        return None
+
+    return tuple(reversed(ops))
+
+
+def is_bytes_slot(fields):
+    """
+    The fields (size, offset) read from the slot of a bytes or a string: its
+    lowest bit tells a long one from a short one, the length being the rest.
+    """
+    return (1, 0) in fields and bool(fields & {(255, 1), (7, 1), (248, 8)})
+
+
+def value_type(accesses):
+    """
+    The type of what the accesses (size, offset, chain) read, the chains
+    starting from it: a mapping, an array (of what the chains after it read),
+    bytes, or the value itself. None if it can't be told.
+    """
+    here = {(size, off) for size, off, chain in accesses if not chain}
+    kinds = {chain[0] for _, _, chain in accesses if chain}
+    inner = [(size, off, chain[1:]) for size, off, chain in accesses if chain]
+
+    if not kinds:
+        sizes = {size for size, off in here if size != 256}
+        offsets = {off for size, off in here if off != 0}
+        if not all(type(x) == int for x in sizes | offsets):
+            return None
+        if offsets:
+            return "struct"
+        return min(sizes) if sizes else 256
+
+    if kinds == {"map"} and not here:
+        t = value_type(inner)
+        return t and ("mapping", t)
+
+    if kinds == {"array"}:
+        # the slot itself, when it's read, is the length
+        if is_bytes_slot(here):
+            return "bytes"
+        t = value_type(inner)
+        return t and ("array", t)
+
+    return None
+
+
+def loc_type(stordefs):
+    """The type of the variable whose storage is read as stordefs."""
+    accesses = []
+    for d in stordefs:
+        if not (m := match(d, ("stor", ":size", ":off", ":idx"))):
+            return None
+        if (chain := access_chain(m.idx)) is None:
+            return None
+        accesses.append((m.size, m.off, chain))
+
+    return value_type(accesses)
 
 
 def to_stordef(exp):
