@@ -5,6 +5,7 @@ from panoramix.matcher import Any, match
 from panoramix.utils.helpers import (
     cached,
     contains,
+    find_f_list,
     is_array,
     opcode,
     replace,
@@ -631,7 +632,72 @@ def split_setmem(line):
             return [line]
         res.append(("setmem", split_idx, split_val))
 
+    # (written all at once: see in_order)
+    ordered = in_order(res, setmem_reads_written)
+    return [line] if ordered is None else ordered
+
+
+def in_order(writes, reads_written):
+    """
+    The parts a write of a whole word was split in - all written at once,
+    with values of what was there before - one after the other, in an order
+    where none reads what one before it wrote: as they are, unless one
+    reads what one before it writes (then that one goes first). None when
+    there's no such order: two that read what the other writes, a swap.
+
+    reads_written(a, b): whether the value a writes may read what b writes.
+    """
+    n = len(writes)
+    after = [
+        [j for j in range(n) if j != i and reads_written(writes[i], writes[j])]
+        for i in range(n)
+    ]
+    waiting = [0] * n
+    for i in range(n):
+        for j in after[i]:
+            waiting[j] += 1
+    res, done = [], [False] * n
+    while len(res) < n:
+        ready = [i for i in range(n) if not done[i] and not waiting[i]]
+        if not ready:
+            return None
+        i = ready[0]
+        done[i] = True
+        res.append(writes[i])
+        for j in after[i]:
+            waiting[j] -= 1
     return res
+
+
+def setmem_reads_written(a, b):
+    """whether the value of the setmem a may read memory the setmem b writes"""
+    if contains(a[2], "msize"):
+        return True
+    for m in find_f_list(a[2], lambda e: [e] if opcode(e) == "mem" else []):
+        if opcode(m[1]) != "range" or range_overlaps(m[1], b[1]) is not False:
+            return True
+    return False
+
+
+def store_reads_written(a, b):
+    """
+    whether the value of the store a may read bits the store b writes: of
+    its slot, or of one that may be it
+    """
+    _, size, off, idx, _ = b
+    reads = find_f_list(
+        a[4], lambda e: [e] if opcode(e) == "storage" and len(e) == 4 else []
+    )
+    for _, r_size, r_off, r_idx in reads:
+        diff = sub_op(r_idx, idx)
+        if type(diff) is int and diff % 2**256 != 0:
+            # another slot
+            continue
+        if not all_concrete(r_size, r_off, size, off):
+            return True
+        if r_off < off + size and off < r_off + r_size:
+            return True
+    return False
 
 
 def byte_field_store(line):
@@ -758,7 +824,9 @@ def split_store(line):
         if pos < 256:
             res.append(("store", 256 - pos, pos, idx, 0))
 
-        return merge_zeros(res)
+        # (written all at once: see in_order)
+        ordered = in_order(merge_zeros(res), store_reads_written)
+        return [line] if ordered is None else ordered
     else:
         return [line]
 
