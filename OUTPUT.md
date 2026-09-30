@@ -114,10 +114,12 @@ how wide it is:
 `log Transfer(address from=..., address indexed to=..., ...)`: the event of
 that signature, `indexed` params in the topics, the others in the data in
 order. An event not known is printed with its whole topic 0:
-`log 0xddf2...b3ef: x, indexed y`; one whose params aren't what the log has
-(indexed otherwise: ERC-721's `Approval` is ERC-20's with its three params
-indexed) with its signature: `log Approval(address owner, address spender,
-uint256 value): indexed x, indexed y, indexed z`.
+`log 0xddf2...b3ef: x, indexed y` (`log 0xddf2...b3ef:` with nothing else);
+one whose params aren't what the log has (indexed otherwise: ERC-721's
+`Approval` is ERC-20's with its three params indexed) with its signature:
+`log Approval(address owner, address spender, uint256 value): indexed x,
+indexed y, indexed z`. A log of no topics is `log x, y`, its data (`log` for
+none).
 
 ## Storage
 

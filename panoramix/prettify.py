@@ -496,7 +496,8 @@ def pretty_line(r, add_color=True):
         abi = event_abi(topics[0]) if topics else None
 
         if not topics:
-            yield col(f"log {', '.join(res_params)}", COLOR_GRAY)
+            # a log of no topics (see OUTPUT.md): its data, if it has any
+            yield col(" ".join(("log", ", ".join(res_params))).rstrip(), COLOR_GRAY)
             return
 
         if abi is None:
@@ -506,10 +507,7 @@ def pretty_line(r, add_color=True):
             else:
                 e = prettify(topics[0], add_color=False, parentheses=False)
             listed = data_params + tuple("indexed " + t for t in topic_params)
-            yield col(
-                f"log {e}{':' if len(listed) > 0 else ''} {', '.join(listed)}",
-                COLOR_GRAY,
-            )
+            yield col(f"log {e}:{' ' if listed else ''}{', '.join(listed)}", COLOR_GRAY)
             return
 
         inputs = fix_input_names(abi["inputs"])
