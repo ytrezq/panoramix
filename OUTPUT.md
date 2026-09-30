@@ -128,7 +128,8 @@ how wide it is:
 ## What the EVM gives
 
 - `caller`, `tx.origin`, `call.value`, `this.address`, `tx.gasprice`,
-  `gas_remaining` (GAS), `chainid`, `msize` (the bytes of memory used);
+  `gas_remaining` (GAS), `chainid`, `msize` (MSIZE: the bytes of memory used
+  so far - by reads and writes the output doesn't all show);
   `block.number`, `block.timestamp`, `block.coinbase`, `block.difficulty`
   (PREVRANDAO), `block.gas_limit`, `block.basefee`, `block.blobbasefee`,
   `blobhash(i)`, `block.hash(n)` (0 but for the 256 blocks before this one).

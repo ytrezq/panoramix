@@ -33,7 +33,6 @@ from panoramix.core.algebra import (
     or_op,
     safe_ge_zero,
     safe_le_op,
-    safe_lt_op,
     safe_max_op,
     safe_min_op,
     shl_op,
@@ -196,9 +195,6 @@ def simplify_trace(trace, timeout=0):
 
         trace = cleanup_mul_1(trace)
         explain("simplify expressions", trace)
-
-        trace = cleanup_msize(trace)
-        explain("calculate msize", trace)
 
         trace = replace_bytes_or_string_length(trace)
         explain("replace storage with length", trace)
@@ -1648,110 +1644,6 @@ assert find_mems(test_e) == {
 }, find_mems(test_e)
 
 
-def _eval_msize(cond):
-    if opcode(cond) not in ("lt", "le", "gt", "ge"):
-        return None
-
-    left, right = cond[1], cond[2]
-
-    if opcode(left) != "max" and opcode(right) != "max":
-        return None
-
-    if opcode(left) == "max" and opcode(right) == "max":
-        return None
-
-    if opcode(right) == "max":
-        cond = swap_cond(cond)
-        left, right = cond[1], cond[2]
-
-    assert opcode(left) == "max"
-
-    if opcode(cond) in ("lt", "le"):
-        if opcode(cond) == "le":
-            cond = ("lt", left, add_op(1, right))
-            left, right = cond[1], cond[2]
-
-        # max(2,3) <= 3
-        # max(2,3) < 4
-
-        # cond == (lt, max(....), right)
-        # any .... > right -> True
-        # any .... ? right -> ?
-        # else -> all ... < right -> False
-
-        if all([safe_lt_op(l, right) is True for l in left[1:]]):
-            return False
-
-        if any([safe_lt_op(right, l) is False for l in left[1:]]):
-            return False
-
-        if all([safe_le_op(right, l) is True for l in left[1:]]):
-            return True
-
-    if opcode(cond) in ("gt", "ge"):
-        assert False, cond  # unsupported yet
-
-    return None
-
-
-def cleanup_msize(trace, current_msize=0):
-    res, _ = _cleanup_msize(trace, current_msize)
-    return res
-
-
-def _cleanup_msize(trace, current_msize=0):
-    """Returns the cleaned up trace, and the msize at the end of it."""
-    res = []
-
-    for line in trace:
-        if opcode(line) == "setmem":
-            line = replace(line, "msize", current_msize)
-
-            mem_right = memloc_right(line)
-
-            current_msize = _max_op(current_msize, mem_right)
-
-            res.append(line)
-
-        elif opcode(line) == "while":
-            new_one = while_max_memidx(line)
-            current_msize = _max_op(current_msize, new_one)
-            res.append(line)
-
-        elif opcode(line) == "if":
-            cond, if_true, if_false = line[1:]
-            if "msize" in str(cond) and opcode(current_msize) == "max":
-                tmp_cond = replace(cond, "msize", current_msize)
-
-                tmp_evald = _eval_msize(tmp_cond)
-
-                if tmp_evald is not None:
-                    cond = 1 if tmp_evald is True else 0
-
-            else:
-                new_msize = max_to_add(current_msize)
-                cond = replace(cond, "msize", new_msize)
-
-            if_true, msize_true = _cleanup_msize(if_true, current_msize)
-            if_false, msize_false = _cleanup_msize(if_false, current_msize)
-            res.append(("if", cond, if_true, if_false))
-
-            # for what follows the if, when its branches merge again
-            if msize_true == msize_false:
-                current_msize = msize_true
-            else:
-                # we could take the max of both, but that gets expensive
-                # quickly, and msize isn't used by any recent compiler.
-                current_msize = "msize"
-
-        else:
-            line = replace(line, "msize", current_msize)
-            res.append(line)
-
-    #    print('done')
-    return res, current_msize
-
-
 def overwrites_mem(line, mem_idx):
     """
     for a given line, returns True if it potentially
@@ -1886,8 +1778,9 @@ def affects(line, exp):
     s = str(exp)
 
     if "msize" in s:
-        if overwrites_mem(line, ("range", 0, "undefined")):
-            return True
+        # the size of the memory used: any line may make it grow, by a write
+        # or a read, what the output shows of them or not
+        return True
 
     if "mem" not in s:
         return False
@@ -2661,46 +2554,6 @@ def make_range(left, right):
         return ("range", left, 0)
     else:
         return ("range", left, r_len)
-
-
-def while_max_memidx(line):
-    # returns the rightmost memory index for a setmem
-
-    a = parse_counters(line)
-    op, cond, path, jds, setvars = line
-    assert op == "while"
-
-    try:
-        setmems = find_setmems(path)
-    except Exception:
-        logger.exception("Error in find_setmems")
-        return "unknown"
-
-    if len(setmems) == 0:
-        return 0
-
-    collected = 0
-
-    if "lastvars" not in a:
-        for s in setmems:
-            collected = _max_op(collected, memloc_right(s))
-
-        return collected
-
-    setmems_begin = setmems_end = setmems
-
-    for v in a["setvars"]:
-        v_idx, v_start = v[1], v[2]
-        v_end = a["lastvars"][v_idx]
-
-        setmems_begin = replace_var(setmems_begin, v_idx, v_start)
-        setmems_end = replace_var(setmems_end, v_idx, v_end)
-
-    for idx, _ in enumerate(setmems):
-        collected = _max_op(collected, memloc_right(setmems_begin[idx]))
-        collected = _max_op(collected, memloc_right(setmems_end[idx]))
-
-    return collected
 
 
 def extract_paths(while_exp):
