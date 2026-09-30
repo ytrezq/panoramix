@@ -1353,6 +1353,10 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         op_form = COLOR_BOLD + " >> " + ENDC if add_color else " >> "
         return wrap(operand(m.val, SHIFT) + op_form + pret(m.off), SHIFT)
 
+    if m := match(exp, ("sall", ":loc")):
+        # the bytes of a bytes (or string) of the storage
+        return pretty_loc(m.loc, add_color) + col("[all]", COLOR_GREEN)
+
     if m := match(exp, ("st", ":size", ":loc", ":width")):
         # an access of the storage (see storage.py)
         text = pretty_loc(m.loc, add_color)

@@ -76,7 +76,9 @@ how wide it is:
 - `call.func_hash` is the selector; `calldata.size` the size of the calldata.
 - An external call prints its gas as the expression it is, its selector as
   the function it calls when that's known (`unknown1234abcd(?)` when it isn't:
-  no params are made up), and then its params as a list of data.
+  no params are made up), and then its params as a list of data. The address
+  called (`x` in `call x.f(...)`, `eth.balance(x)`...) is the low 160 bits
+  of `x`, as for the EVM.
   `ext_call.success` is its result, `ext_call.return_data[a len n]` what it
   returned, `return_data.size` how much.
 
@@ -107,7 +109,9 @@ storage (vyper):` for Vyper, whose mappings hash the slot, then the key:
 - `b is bytes at storage 4`: `b` is the word at the slot 4 (a short bytes or
   string holds its data and twice its length there, a long one twice its
   length plus 1), `b[i]` its data word at `keccak(4) + i`, `b.length` its
-  length.
+  length, `b[all]` its `b.length` bytes (from the word at the slot for a
+  short one, from `keccak(4)` on for a long one) - `return Array(len=
+  b.length, data=b[all])` is the getter of a `bytes` or a `string`.
 - `.field_N` of a struct is its value from the bit `N` on: the slot `N /
   256` after its first one, from the bit `N % 256` of it up to the top of
   the slot, unless a cast says how many bits.

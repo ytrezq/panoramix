@@ -31,7 +31,7 @@ from functools import lru_cache
 from panoramix.core.algebra import add_op, mul_op
 from panoramix.core.memloc import sized, sizeof, value_bits
 from panoramix.matcher import Any, match
-from panoramix.utils.helpers import opcode, replace_f
+from panoramix.utils.helpers import find_f_list, opcode, replace_f
 
 logger = logging.getLogger(__name__)
 
@@ -1006,14 +1006,138 @@ def getter_access(func):
     return None
 
 
+def bytes_tail(trace, key, selector):
+    """
+    The trace with what's after a first part of it - its checks of the
+    params, say - replaced by the return of the bytes (or string) of the
+    storage at the slot key, ABI-encoded, `return Array(len=b.length,
+    data=b[all])`, when that's the same - or None. That is checked by
+    running both (see runtrace), on bytes as the compiler keeps them, short
+    and long, of every length the code may treat apart, and params clean
+    and dirty; the trace may read nothing else of the storage.
+    """
+    import random
+
+    from panoramix.runtrace import Machine, Unsupported, keccak
+
+    rnd = random.Random(0)
+    lengths = [0, 1, 2, 30, 31, 32, 33, 63, 64, 65, 96, 97, 300]
+    # and about the numbers of the code (a length compared with one)
+    around = set()
+    for c in find_f_list(
+        trace, lambda e: [e] if type(e) == int and 0 < e < 4096 else []
+    ):
+        around |= {c - 1, c, c + 1, c // 2, c // 2 + 1}
+    lengths += sorted(around - set(lengths))[:48]
+    values = [0, 1, 2, 255, 2**16 - 1, 2**160 - 1, 2**160, 2**255, 2**256 - 1]
+
+    worlds = []
+    for n, length in enumerate(lengths):
+        content = bytes(rnd.randrange(1, 256) for _ in range(length))
+        params = [values[(n + 3 * k) % len(values)] for k in range(8)]
+        calldata = selector.to_bytes(4, "big") + b"".join(
+            p.to_bytes(32, "big") for p in params
+        )
+        worlds.append((calldata, content))
+    for n in (0, 31):
+        # calldata too short for a param
+        worlds.append((selector.to_bytes(4, "big") + b"\x01" * n, b"ab"))
+
+    def run(t, calldata, content):
+        """(how t ends, whether it returned the bytes) - None if it can't be run"""
+        words = {}
+        reached = []
+
+        def sload(slot):
+            if slot not in words:
+                raise Unsupported("another slot")
+            return words[slot]
+
+        def bytes_length(slot):
+            v = sload(slot)
+            return (v - 1) // 2 if v & 1 else (v & 0xFF) // 2
+
+        def bytes_data(slot):
+            reached.append(slot)
+            return content
+
+        m = Machine(calldata, sload, bytes_length, bytes_data=bytes_data)
+        try:
+            slot = m.ev(key)
+            padded = content + b"\0" * (-len(content) % 32)
+            if len(content) < 32:
+                words[slot] = int.from_bytes(padded.ljust(32, b"\0"), "big") | 2 * len(
+                    content
+                )
+            else:
+                words[slot] = 2 * len(content) + 1
+                base = keccak(slot.to_bytes(32, "big"))
+                for i in range(len(padded) // 32 + 1):
+                    words[(base + i) % 2**256] = int.from_bytes(
+                        padded[32 * i : 32 * i + 32].ljust(32, b"\0"), "big"
+                    )
+            return m.run(t), bool(reached)
+        except (Unsupported, RecursionError, ValueError, OverflowError, KeyError):
+            return None
+
+    orig = [run(trace, *w) for w in worlds]
+    if None in orig or not any(r[0][0] == "return" for r in orig):
+        return None
+    tail = [
+        (
+            "return",
+            ("data", ("arr", ("storage", 256, 0, ("length", key)), ("sbytes", key))),
+        )
+    ]
+    for n, cand in enumerate(splits(trace, tail)):
+        if n > 200:
+            break
+        for w, r in zip(worlds, orig):
+            got = run(cand, *w)
+            if got is None or got[0] != r[0] or (r[0][0] == "return" and not got[1]):
+                break
+        else:
+            return cand
+    return None
+
+
+def splits(trace, tail):
+    """
+    The trace with what's after a first part of it replaced by tail - the
+    least first: after each line, and into the branch of an if that goes on
+    when the other ends (a check), then the line kept.
+    """
+
+    def ends(lines):
+        return bool(lines) and opcode(lines[-1]) in (
+            "revert",
+            "invalid",
+            "return",
+            "stop",
+        )
+
+    for i, line in enumerate(trace):
+        yield trace[:i] + tail
+        if opcode(line) == "if" and len(line) == 4:
+            _, cond, a, b = line
+            rest = list(trace[i + 1 :])
+            if ends(a):
+                for sub in splits(list(b) + rest, tail):
+                    yield trace[:i] + [("if", cond, a, sub)]
+            if ends(b):
+                for sub in splits(list(a) + rest, tail):
+                    yield trace[:i] + [("if", cond, sub, b)]
+
+
 def getter_path(t, sts, size, off):
     """
     Whether the access of what's at the steps sts from a root of type t is
     what a getter of it returns: a value of it, reached by keys and indexes
     that are the getter's params - not the length of an array, nor a bytes,
-    nor an element found some other way.
+    nor an element found some other way. (Of a bytes, its length is: the
+    getter returns its bytes, see Storage.bytes_getter.)
     """
-    if t is None or t[0] == "bytes":
+    if t is None or (t[0] == "bytes" and not sts):
         return False
     try:
         f = form(("sv", None), t, sts, size, off)
@@ -1022,6 +1146,8 @@ def getter_path(t, sts, size, off):
     if opcode(f) != "st":
         return False
     loc, keys = f[2], []
+    if loc[0] == "sbl" and sts[-1:] == [("blen",)]:
+        loc = loc[1]
     while loc[0] != "sv":
         if loc[0] == "si":
             keys.append(loc[2])
@@ -1077,6 +1203,13 @@ class Storage:
                     moved = True
         if moved:
             self.type_roots(by_root)
+
+        # the functions that return a bytes (or string) of the storage, as
+        # running them shows: key -> its slot
+        self.bytes_getters = {}
+        for f in functions:
+            if (key := self.bytes_getter(f)) is not None:
+                self.bytes_getters[f] = key
 
         self.names(functions)
 
@@ -1150,13 +1283,19 @@ class Storage:
         """the names of the variables, one each, from the getters"""
         getters = {}
         for f in sorted(functions, key=lambda f: f.name):
-            if not f.getter:
+            if not f.getter and f not in self.bytes_getters:
                 continue
             name = f.name.split("(")[0]
             if name.startswith("get") and len(name) > 3 and name[3].isupper():
                 # getBalance: balance
                 name = name[3].lower() + name[4:]
             if not good_name(name):
+                continue
+            if f in self.bytes_getters:
+                length = (256, 0, ("length", self.bytes_getters[f][0]))
+                n, sts = self.steps[length]
+                if getter_path(self.types.get(n), sts, 256, 0):
+                    getters.setdefault(("root", n), name)
                 continue
             a = getter_access(f)
             if a is None:
@@ -1212,6 +1351,63 @@ class Storage:
                 name = unique(name, n)
                 self.var_of[("root", n)] = name
                 self.defs[name] = {"slot": n, "type": self.types[n]}
+
+    def bytes_getter(self, f):
+        """
+        The slot (its expression) of the bytes of the storage the function
+        f returns, ABI-encoded - whatever its code is: that is checked by
+        running it (see bytes_tail) - and f's trace returning them so, or
+        None.
+        """
+        if not getattr(f, "read_only", False) or type(f.hash) != str:
+            return None
+        try:
+            selector = int(f.hash, 16)
+        except ValueError:
+            return None
+        keys = []
+        for e in find_f_list(f.trace, lambda e: [e] if opcode(e) == "storage" else []):
+            k = (
+                e[3][1]
+                if opcode(e[3]) == "length"
+                else e[3] if e[1:3] == (1, 0) else None
+            )
+            if opcode(k) == "loc":
+                k = k[1]
+            if k is not None and k not in keys:
+                keys.append(k)
+        for key in keys[:3]:
+            key = ("loc", key) if type(key) == int else key
+            length = (256, 0, ("length", key))
+            if length not in self.steps:
+                try:
+                    self.steps[length] = steps(parse(("length", key), self.lang))
+                except Exception:
+                    continue
+            st = self.steps[length]
+            if st is None or st[0] not in self.types:
+                continue
+            try:
+                f_len = form(("sv", None), self.types[st[0]], st[1], 256, 0)
+            except Fail:
+                continue
+            if not match(f_len, ("st", 256, ("sbl", Any), 256)):
+                continue
+            if (trace := bytes_tail(f.trace, key, selector)) is not None:
+                return key, trace
+        return None
+
+    def getter_trace(self, f):
+        """the trace of a bytes getter: `return name[all]`, ABI-encoded - or None"""
+        if f not in self.bytes_getters:
+            return None
+        key, trace = self.bytes_getters[f]
+        f_len = self.form(256, 0, ("length", key), False)
+        if not (m := match(f_len, ("st", 256, ("sbl", ":loc"), 256))):
+            return None
+        return self.rewrite(
+            replace_f(trace, lambda e: ("sall", m.loc) if e == ("sbytes", key) else e)
+        )
 
     def form(self, size, off, idx, write):
         """the printed access, checked, else raw"""
@@ -1474,7 +1670,7 @@ def rewrite_functions(functions, code=None):
     lang = language(code, accesses)
     s = Storage(functions, lang)
     for f in functions:
-        f.trace = s.rewrite(f.trace)
+        f.trace = s.getter_trace(f) or s.rewrite(f.trace)
     return lang, s.header()
 
 

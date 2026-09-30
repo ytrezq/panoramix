@@ -470,7 +470,7 @@ def sized(exp):
     than by how it's written (see sizeof).
     """
     op = opcode(exp)
-    return op in ("bytes", "data", "arr", "mem") or is_array(op)
+    return op in ("bytes", "data", "arr", "mem", "sall") or is_array(op)
 
 
 def keep_width(old, new):
