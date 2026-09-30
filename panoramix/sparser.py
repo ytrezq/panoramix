@@ -104,6 +104,17 @@ def get_name_full(exp):
     return f(exp)
 
 
+def stor_name(loc):
+    """The name of the variable at loc when it has no other: storN."""
+    if type(loc) == int:
+        loc %= 2**256
+        if loc >= 1000:
+            # a big number, like a hash: its first digits
+            return "stor" + hex(loc)[2:6].upper()
+
+    return "stor" + str(loc)
+
+
 def get_name(exp):
     r = get_name_full(exp)
     if r is None:
@@ -235,7 +246,7 @@ def rewrite_functions(functions):
 
             name = get_name(l)
             if name is None:
-                name = "stor" + str(loc)
+                name = stor_name(loc)
 
             if m := match(l, ("stor", int, int, ":idx")):
                 idx = m.idx
@@ -255,10 +266,7 @@ def rewrite_functions(functions):
                 name = get_name(l)
 
                 if name is None:
-                    if type(loc) == int and loc >= 1000:
-                        name = "stor" + hex(loc)[2:6].upper()
-                    else:
-                        name = "stor" + str(loc)
+                    name = stor_name(loc)
 
                 defs.append(("def", name, loc, ("mask", l[1], l[2])))
 

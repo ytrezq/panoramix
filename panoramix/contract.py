@@ -215,11 +215,7 @@ class Contract:
 
         def loc_to_name(exp):
             if m := match(exp, ("loc", ":int:num")):
-                num = m.num
-                if num < 1000:
-                    return ("name", "stor" + str(num), num)
-                else:
-                    return ("name", "stor" + hex(num)[2:6].upper(), num)
+                return ("name", sparser.stor_name(m.num), m.num)
 
             if m := match(exp, ("loc", ":num")):
                 return (
