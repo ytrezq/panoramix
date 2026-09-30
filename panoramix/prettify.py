@@ -28,7 +28,7 @@ from panoramix.core.algebra import (
     sub_op,
     to_bytes,
 )
-from panoramix.core.arithmetic import is_zero, simplify_bool
+from panoramix.core.arithmetic import is_bool, is_zero, simplify_bool
 from panoramix.core.masks import get_bit, mask_to_type
 from panoramix.core.memloc import byte_elements, sized, sizeof
 from panoramix.loader import Loader
@@ -374,6 +374,13 @@ def to_real_int(exp):
         return -arithmetic.sub(0, exp)
     else:
         return exp
+
+
+def unsigned(exp):
+    """a number as the unsigned word it is: 2**256 - 1 rather than -1"""
+    if type(exp) == int:
+        return exp % 2**256
+    return exp
 
 
 def pretty_line(r, add_color=True):
@@ -914,18 +921,18 @@ def pretty_num(exp, add_color):
         while count >= 9:
             if exp % (10**count) == 0:
                 if exp // (10**count) == 1:
-                    return f"10^{count}"
+                    return f"10**{count}"
                 else:
-                    return f"{exp // (10**count)} * 10^{count}"
+                    return f"{exp // (10**count)} * 10**{count}"
 
             count -= 1
 
         count = 6
         if exp % (10**count) == 0:
             if exp // (10**count) == 1:
-                return f"10^{count}"
+                return f"10**{count}"
             else:
-                return f"{exp // (10**count)} * 10^{count}"
+                return f"{exp // (10**count)} * 10**{count}"
 
     if type(exp) == int:
         if (
@@ -954,12 +961,14 @@ def pretty_num(exp, add_color):
 
 """
 
-OR, AND, NOT, CMP, SHIFT, ADD, MUL, UNARY, POW, ATOM = range(1, 11)
+OR, AND, NOT, CMP, BOR, BXOR, BAND, SHIFT, ADD, MUL, UNARY, POW, ATOM = range(1, 14)
 
 OPERATOR_PRECEDENCE = {
     " or ": OR,
-    " xor ": OR,
     " and ": AND,
+    " | ": BOR,
+    " ^ ": BXOR,
+    " & ": BAND,
     " == ": CMP,
     " != ": CMP,
     " < ": CMP,
@@ -981,7 +990,7 @@ OPERATOR_PRECEDENCE = {
     " *′ ": MUL,
     " /′ ": MUL,
     " %′ ": MUL,
-    "^": POW,
+    "**": POW,
 }
 
 
@@ -999,7 +1008,7 @@ def num_precedence(text):
         return MUL
     if text.startswith("-"):
         return UNARY
-    if "^" in text:
+    if "**" in text:
         return POW
     return ATOM
 
@@ -1018,6 +1027,9 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
 
     if rem_bool:
         exp = simplify_bool(exp)
+        if m := match(exp, ("xor", ":a", ":b")):
+            # true when it isn't 0: when they differ
+            exp = ("iszero", ("eq", m.a, m.b))
         if opcode(exp) == "bool":
             return prettify(
                 exp,
@@ -1222,6 +1234,7 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         )
         and safe_le_op(m.s_size, m.size)
         and m.shl == 0
+        and m.offset == 0
     ):
         return pret(("stor", m.s_size, m.s_off, m.s_idx))
 
@@ -1464,13 +1477,13 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         "lt": " < ",
         "le": " <= ",
         "ge": " >= ",
-        "or": " or ",
+        "or": " | ",
         "eq": " == ",
         "mod": " % ",
         "shl": " << ",
         "shr": " >> ",
-        "exp": "^",
-        "and": " and ",
+        "exp": "**",
+        "and": " & ",
         "sge": " >=′ ",
         "sle": " <=′ ",
         "sgt": " >′ ",
@@ -1479,7 +1492,7 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         "smul": " *′ ",
         "sdiv": " /′ ",
         "smod": " %′ ",
-        "xor": " xor ",
+        "xor": " ^ ",
     }
 
     def pretty_adds(exp):
@@ -1506,15 +1519,17 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
             else:
                 res += " + " + operand(x, ADD)
 
-        if real > 0:
-            res += " + " + operand(real, ADD)
+        if real > 0 or real <= -(2**128):
+            # a big one - a hash, say - is added, however large it is
+            res += " + " + operand(real % 2**256, ADD)
         elif real < 0:
             res += " - " + operand(-real, ADD + 1)
 
         return wrap(res, ADD)
 
     if opcode(exp) == "not":
-        return wrap(col("!", COLOR_BOLD) + operand(exp[1], UNARY), UNARY)
+        # bitwise, as in python: `not` is the logical one (iszero)
+        return wrap(col("~", COLOR_BOLD) + operand(exp[1], UNARY), UNARY)
 
     if opcode(exp) == "add":
         return pretty_adds(exp)
@@ -1540,11 +1555,15 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         return pret(m.num, parentheses=ctx)
 
     if m := match(exp, ("exp", ":a", ":n")):
-        return wrap(operand(m.a, POW + 1) + "^" + operand(m.n, POW), POW)
+        return wrap(operand(m.a, POW + 1) + "**" + operand(m.n, POW), POW)
 
     if opcode(exp) in opcode_to_arithm:
         if opcode(exp) in ["shl", "shr"]:
             exp = exp[0], exp[2], exp[1]
+
+        if opcode(exp) in ("lt", "gt", "le", "ge"):
+            # unsigned: a number of the top half of the words is no negative
+            exp = (exp[0],) + tuple(unsigned(e) for e in exp[1:])
 
         op_form = opcode_to_arithm[opcode(exp)]
         prec = OPERATOR_PRECEDENCE[op_form]
@@ -1573,9 +1592,16 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
 
             return ("and",) + res
 
-        if opcode(exp) == "and":
-            exp = fold_ands(exp)
-            parts = [operand(e, rest_prec, rem_bool=True) for e in exp[1:]]
+        if opcode(exp) in ("and", "or") and all(is_bool(e) for e in exp[1:]):
+            # of truth values: the logical ones, whose operands are true
+            # when they aren't 0 (bool(x) can be x)
+            if opcode(exp) == "and":
+                exp = fold_ands(exp)
+            op_form = " and " if opcode(exp) == "and" else " or "
+            prec = OPERATOR_PRECEDENCE[op_form]
+            if add_color:
+                op_form = COLOR_BOLD + op_form + ENDC
+            parts = [operand(e, prec + 1, rem_bool=True) for e in exp[1:]]
         else:
             parts = [operand(exp[1], first_prec)] + [
                 operand(e, rest_prec) for e in exp[2:]
@@ -1588,6 +1614,9 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
 
         def comparison(left, op, right):
             return wrap(operand(left, CMP + 1) + op + operand(right, CMP + 1), CMP)
+
+        if opcode(val) in ("lt", "gt"):
+            val = (val[0],) + tuple(unsigned(e) for e in val[1:])
 
         if m := match(val, ("gt", ":left", ":right")):
             return comparison(m.left, " <= ", m.right)
