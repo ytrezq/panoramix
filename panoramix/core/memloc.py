@@ -11,6 +11,7 @@ from panoramix.utils.helpers import (
 )
 
 from panoramix.core.algebra import (
+    BOUNDED_SYMBOLS,
     CannotCompare,
     add_ge_zero,
     add_op,
@@ -44,6 +45,7 @@ from panoramix.core.algebra import (
     sub_op,
     to_bytes,
     try_add,
+    value_range,
 )
 from panoramix.core.masks import find_mask
 
@@ -105,16 +107,6 @@ def value_bits(exp):
         return m.size
 
     return 256
-
-
-# what no execution can make large: sizes of what gas pays for
-BOUNDED_SYMBOLS = {
-    "calldatasize": 64,
-    "returndatasize": 64,
-    "codesize": 64,
-    "msize": 64,
-    "gas": 64,
-}
 
 
 def max_value_bits(exp, bounds=None):
@@ -675,6 +667,11 @@ def byte_field_store(line):
                 continue
             size = mask[0].bit_length()
             if mask[0] != 2**size - 1 or value_bits(val[0]) > size:
+                continue
+            lo, hi = value_range(val[1])
+            if lo < 0 or 8 * hi + size > 256:
+                # (256^k is 0 for a k of 32 or more: then nothing changes,
+                # not a field past the slot)
                 continue
             return [("store", size, mul_op(8, val[1]), m.idx, val[0])]
 

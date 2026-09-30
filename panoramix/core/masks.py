@@ -1,6 +1,6 @@
 from panoramix.utils.helpers import cached, cleanup_mul_1, opcode, to_exp2
 
-from panoramix.core.algebra import mul_op
+from panoramix.core.algebra import mul_op, value_range
 
 
 def type_to_mask(s):
@@ -112,11 +112,15 @@ assert find_mask(0x7ABBA20000) == (24, 16)  # rounding to eights
 
 
 @cached
-def to_mask(num):
+def to_mask(num, bounds=None):
+    """
+    (size, offset) if num is a mask (bits set from offset on, size of them).
+    bounds: what's known of what num is made of (see value_range).
+    """
     num = cleanup_mul_1(num)
 
     if opcode(num) == "not":
-        return to_neg_mask(num[1])
+        return to_neg_mask(num[1], bounds)
 
     if opcode(num) == "sub":
         if opcode(num[1]) == "exp" and num[2] == 1:
@@ -124,8 +128,16 @@ def to_mask(num):
             if mul == None:
                 return None
 
-            # 2 ** mask_len - 1: the lowest mask_len bits
-            mask_len = mul_op(mul, num[1][2])
+            # 2 ** mask_len - 1: the lowest mask_len bits - all of them for
+            # an exponent of 256 / mul or more. When it isn't known, that's
+            # the length only if the exponent is the integer it's made of
+            # (32 - x isn't, see value_range) and mul times it is too.
+            e = num[1][2]
+            if type(e) is not int:
+                lo, hi = value_range(e, bounds)
+                if lo < 0 or mul * hi > 2**256 - 1:
+                    return None
+            mask_len = mul_op(mul, e)
 
             return (mask_len, 0)
 
@@ -135,7 +147,8 @@ def to_mask(num):
                 "sub",
                 num[2],
                 1,
-            )
+            ),
+            bounds,
         )
 
     if type(num) != int:
@@ -158,9 +171,9 @@ def to_mask(num):
     return mask_pos_plus_len - mask_pos, mask_pos
 
 
-def to_neg_mask(num):
+def to_neg_mask(num, bounds=None):
     if opcode(num) == "not":
-        return to_mask(num[1])
+        return to_mask(num[1], bounds)
 
     if type(num) != int:
         return None

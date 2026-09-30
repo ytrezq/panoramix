@@ -12,7 +12,9 @@ from panoramix.core.algebra import (
     lt_op,
     mask_op,
     mul_op,
+    neg_mask_op,
     or_op,
+    shl_op,
     shr_op,
     sub_op,
     to_bytes,
@@ -25,6 +27,7 @@ from panoramix.core.arithmetic import (
     mentions,
     simplify_bool,
 )
+from panoramix.core.masks import to_mask, to_neg_mask
 from panoramix.core.memloc import max_value_bits
 from panoramix.matcher import match
 from panoramix.prettify import pprint_trace
@@ -33,6 +36,7 @@ from panoramix.utils.helpers import (
     MAX_EXP_SIZE,
     EasyCopy,
     all_concrete,
+    contains,
     exp_size,
     opcode,
     precompiled,
@@ -182,6 +186,73 @@ def upper_bound(v, known):
         if n is not None and (res is None or n < res):
             res = n
     return res
+
+
+def known_bounds(known):
+    """
+    {x: (lowest, highest)}: what the known conditions say of what they
+    compare with a number (see algebra.value_range)
+    """
+    flip = {"lt": "gt", "gt": "lt", "le": "ge", "ge": "le", "eq": "eq"}
+    negate = {"lt": "ge", "ge": "lt", "gt": "le", "le": "gt"}
+    top = 2**256 - 1
+    res = {}
+    for fact in known:
+        neg = False
+        while opcode(fact) == "iszero":
+            neg, fact = not neg, fact[1]
+        op = opcode(fact)
+        if op == "var_bits" and not neg and type(fact[2]) is int:
+            v, lo, hi = fact[1], 0, 2 ** fact[2] - 1
+        elif op in flip and len(fact) == 3:
+            a, b = fact[1], fact[2]
+            if type(a) is int and type(b) is not int:
+                a, b, op = b, a, flip[op]
+            if type(a) is int or type(b) is not int or not 0 <= b <= top:
+                continue
+            if neg:
+                if op == "eq":
+                    continue
+                op = negate[op]
+            v = a
+            lo, hi = {
+                "lt": (0, b - 1),
+                "le": (0, b),
+                "gt": (b + 1, top),
+                "ge": (b, top),
+                "eq": (b, b),
+            }[op]
+        else:
+            continue
+        old_lo, old_hi = res.get(v, (0, top))
+        lo, hi = max(lo, old_lo), min(hi, old_hi)
+        if lo <= hi:
+            res[v] = (lo, hi)
+    return res
+
+
+def and_op(left, right, known):
+    """
+    left & right - a mask when one of them is one (see Stack.simplify),
+    which for a 256 ** e - 1 is when the conditions known say what e is
+    (see masks.to_mask).
+    """
+    exp = arithmetic.eval(("and", left, right))
+    if opcode(exp) != "and" or len(exp) != 3:
+        return exp
+    left, right = exp[1], exp[2]
+    bounds = None
+    if contains(exp, "exp"):
+        bounds = known_bounds(known)
+    if mask := to_mask(left, bounds):
+        return mask_op(right, *mask)
+    if mask := to_mask(right, bounds):
+        return mask_op(left, *mask)
+    if neg := to_neg_mask(left, bounds):
+        return neg_mask_op(right, *neg)
+    if neg := to_neg_mask(right, bounds):
+        return neg_mask_op(left, *neg)
+    return exp
 
 
 def bound(v, known):
@@ -1358,9 +1429,12 @@ class VM(EasyCopy):
         if len(line) > 2:
             param = line[2]
 
-        if op in [
+        if op == "and":
+            left, right = stack.pop(), stack.pop()
+            stack.append(and_op(left, right, self.known))
+
+        elif op in [
             "exp",
-            "and",
             "eq",
             "div",
             "lt",
@@ -1417,9 +1491,9 @@ class VM(EasyCopy):
             off = stack.pop()
             exp = stack.pop()
             if all_concrete(off, exp):
-                stack.append(exp << off)
+                stack.append(exp << off if off < 256 else 0)
             else:
-                stack.append(mask_op(exp, shl=off))
+                stack.append(shl_op(exp, off))
 
         elif op == "shr":
             off = stack.pop()
@@ -1476,11 +1550,18 @@ class VM(EasyCopy):
             )
 
         elif op == "byte":
-            # the idx-th byte of val, the most significant one first
+            # the idx-th byte of val, the most significant one first - 0 for
+            # an idx of 32 or more: as it is when idx isn't known (a mask at
+            # an offset computed from it wouldn't say that)
             idx = stack.pop()
             val = stack.pop()
-            off = sub_op(248, mul_op(8, idx))
-            stack.append(mask_op(val, 8, off, shr=off))
+            if type(idx) is not int:
+                stack.append(("byte", idx, val))
+            elif idx >= 32:
+                stack.append(0)
+            else:
+                off = 248 - 8 * idx
+                stack.append(mask_op(val, 8, off, shr=off))
 
         elif op == "selfbalance":
             stack.append(

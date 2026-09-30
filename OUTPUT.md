@@ -19,6 +19,11 @@ something for sure, it says less (a raw `stor[...]`, `mem[...]`, a
   isn't 0. `Mask(size, off, x)` is the bits `off` to `off + size` of `x`, in
   place (the others 0). `ceil32(x)` / `floor32(x)` round to a multiple of 32,
   `min(x, y)` / `max(x, y)` are the smaller and the larger.
+- `byte(i, x)` is the byte `i` of `x`, the most significant one first (0 for
+  an `i` of 32 or more); `signextend(b, x)` the lowest `b + 1` bytes of `x`
+  sign-extended (`x` for a `b` of 31 or more); `shift(x, n)` is `x << n` when
+  `n` is positive as a signed number (`n >=′ 0`), `x >> -n` when it isn't
+  (Vyper's `shift`).
 - `ext_code.size(a)` and `ext_code.hash(a)` are the size and the hash of the
   code of the account `a` (EXTCODESIZE, EXTCODEHASH), `ext_code(a).data[s len
   n]` its `n` bytes from `s` (zeroes past its end).

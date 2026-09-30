@@ -19,6 +19,7 @@ from panoramix.core.algebra import (
     flatten_adds,
     ge_zero,
     get_sign,
+    is_word,
     le_op,
     lt_op,
     mask_op,
@@ -35,6 +36,7 @@ from panoramix.core.algebra import (
     safe_lt_op,
     safe_max_op,
     safe_min_op,
+    shl_op,
     shr_op,
     signextend_op,
     simplify,
@@ -368,8 +370,14 @@ def simplify_exp(exp):
         return simplify_bytes(exp)
 
     if m := match(exp, ("shr", ":int:off", ":val")):
-        # a shift by an amount the vm didn't know, known now
-        exp = shr_op(m.val, m.off)
+        # a shift by an amount the vm didn't know, known now (the word of
+        # what it was made of)
+        exp = shr_op(m.val, m.off % 2**256)
+
+    if m := match(exp, ("shl", ":off", ":val")):
+        # (see shl_op: a mask when it's known to be one)
+        off = m.off % 2**256 if type(m.off) is int else m.off
+        exp = shl_op(m.val, off)
 
     if m := match(exp, ("signextend", ":b", ":val")):
         exp = signextend_op(m.b, m.val)
@@ -544,9 +552,14 @@ def simplify_exp(exp):
     if m := match(exp, ("mask_shl", ":int:size", ":int:offset", ":int:shl", ":e")):
         exp = mask_op(simplify_exp(m.e), m.size, m.offset, m.shl)
 
-    if m := match(
-        exp, ("mask_shl", ":size", 0, 0, ("div", ":expr", ("exp", 256, ":shr")))
-    ):
+    if (
+        m := match(
+            exp, ("mask_shl", ":size", 0, 0, ("div", ":expr", ("exp", 256, ":shr")))
+        )
+    ) and is_word(("mul", 8, m.shr)):
+        # (256 ** shr is 0 for a shr of 32 or more, and so is the division
+        # by it: the mask's offset is 8 * shr if that's the integer it's made
+        # of - 32 - x isn't, nor 8 * x for any x, see value_range)
         shift = bits(m.shr)
         exp = mask_op(simplify_exp(m.expr), m.size, shift, shr=shift)
 

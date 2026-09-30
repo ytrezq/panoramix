@@ -94,6 +94,198 @@ def may_be_wide(exp):
     return False
 
 
+# what no execution can make large: sizes of what gas pays for
+BOUNDED_SYMBOLS = {
+    "calldatasize": 64,
+    "returndatasize": 64,
+    "codesize": 64,
+    "msize": 64,
+    "gas": 64,
+}
+
+WORD_TOP = 2**256 - 1
+
+
+def value_range(exp, bounds=None):
+    """
+    (lowest, highest): what exp can be, as an integer - for any value of the
+    words it's made of (between 0 and 2**256 - 1, less for BOUNDED_SYMBOLS,
+    and for what bounds says: {x: (lowest, highest)}).
+
+    A sum or a product (add, mul) is the integer it is here: a sum of words
+    may be negative, or above 2**256. That's how the fields of a mask are
+    read (its size, offset and shift, see mask_op) - a word from the EVM is
+    one of them only when it's the same integer (see shl_op). Anything else
+    is a word.
+    """
+    if bounds:
+        return _value_range(exp, bounds)
+    return _cached_value_range(exp)
+
+
+@cached
+def _cached_value_range(exp):
+    return _value_range(exp, None)
+
+
+def _linear(exp, bounds):
+    """
+    exp as a sum: ({term: coefficient}, constant, (lowest, highest) of a
+    number added to them)
+    """
+    if type(exp) in (int, bool):
+        return {}, int(exp), (0, 0)
+
+    op = opcode(exp)
+    if op == "add":
+        terms, const, lo, hi = {}, 0, 0, 0
+        for e in exp[1:]:
+            t, c, (d_lo, d_hi) = _linear(e, bounds)
+            const, lo, hi = const + c, lo + d_lo, hi + d_hi
+            for k, v in t.items():
+                terms[k] = terms.get(k, 0) + v
+        return terms, const, (lo, hi)
+
+    if op == "mul" and len(exp) >= 3 and type(exp[1]) is int:
+        rest = exp[2] if len(exp) == 3 else ("mul",) + exp[2:]
+        k = exp[1]
+        t, c, (d_lo, d_hi) = _linear(rest, bounds)
+        d = (k * d_lo, k * d_hi) if k >= 0 else (k * d_hi, k * d_lo)
+        return {x: v * k for x, v in t.items()}, c * k, d
+
+    if (
+        (m := match(exp, ("mask_shl", ":int:size", ":int:off", ":int:shl", ":x")))
+        and 0 < m.size
+        and 0 <= m.off <= 16
+        and 0 <= m.shl
+        and m.off + m.size + m.shl <= 256
+    ):
+        # x with its lowest off bits cleared (floor32(x); ceil32(y) is
+        # floor32(y + 31)), times 2**shl (8 * x, a mask moved left by 3):
+        # 2**shl * (x - d), d from 0 to 2**off - 1, when the mask doesn't
+        # cut the top of x
+        lo, hi = _value_range(m.x, bounds)
+        if 0 <= lo and hi < 2 ** (m.off + m.size):
+            t, c, (d_lo, d_hi) = _linear(m.x, bounds)
+            k = 2**m.shl
+            d = (k * (d_lo - (2**m.off - 1)), k * d_hi)
+            return {x: v * k for x, v in t.items()}, c * k, d
+
+    return {exp: 1}, 0, (0, 0)
+
+
+def _value_range(exp, bounds):
+    terms, const, (lo, hi) = _linear(exp, bounds)
+    lo, hi = lo + const, hi + const
+    for t, c in terms.items():
+        if c == 0:
+            continue
+        t_lo, t_hi = _term_range(t, bounds)
+        if c > 0:
+            lo, hi = lo + c * t_lo, hi + c * t_hi
+        else:
+            lo, hi = lo + c * t_hi, hi + c * t_lo
+    return lo, hi
+
+
+def _word_top(exp, bounds):
+    """The highest value of exp as a word."""
+    lo, hi = _value_range(exp, bounds)
+    return hi if 0 <= lo and hi <= WORD_TOP else WORD_TOP
+
+
+def _term_range(t, bounds):
+    """value_range of what isn't a sum, nor a number times something"""
+    if bounds and t in bounds:
+        return bounds[t]
+
+    if type(t) in (int, bool):
+        return int(t), int(t)
+
+    if type(t) is str:
+        return 0, 2 ** BOUNDED_SYMBOLS.get(t, 256) - 1
+
+    op = opcode(t)
+
+    if op in BOOL_OPS:
+        return 0, 1
+
+    if op == "mul":
+        # a product of what isn't numbers
+        lo = hi = 1
+        for f in t[1:]:
+            f_lo, f_hi = _value_range(f, bounds)
+            cands = (lo * f_lo, lo * f_hi, hi * f_lo, hi * f_hi)
+            lo, hi = min(cands), max(cands)
+        return lo, hi
+
+    # the rest are words
+    if (m := match(t, ("mod", ":x", ":int:c"))) and 0 < m.c:
+        return 0, min(m.c - 1, _word_top(m.x, bounds))
+
+    if (m := match(t, ("div", ":x", ":int:c"))) and 0 < m.c:
+        return 0, _word_top(m.x, bounds) // m.c
+
+    if m := match(t, ("mask_shl", ":int:size", ":int:off", ":int:shl", ":x")):
+        top = _clamp_bits(m.off + m.size)
+        if not may_be_wide(m.x):
+            top = min(top, _word_top(m.x, bounds).bit_length())
+        bottom = max(m.off, 0)
+        if top <= bottom:
+            return 0, 0
+        high = 2**top - 2**bottom
+        high = high << _clamp_bits(m.shl) if m.shl >= 0 else high >> -m.shl
+        return 0, min(high, WORD_TOP)
+
+    if (m := match(t, ("storage", ":int:size", ":int:off", Any))) and m.off >= 0:
+        return 0, 2 ** max(0, min(m.size, 256)) - 1
+
+    if op == "and" and len(t) > 1:
+        return 0, min(_word_top(e, bounds) for e in t[1:])
+
+    if op in ("or", "xor") and len(t) > 1:
+        bits = max(_word_top(e, bounds).bit_length() for e in t[1:])
+        return 0, 2**bits - 1
+
+    if op in ("min", "max") and len(t) > 1:
+        ranges = [_value_range(e, bounds) for e in t[1:]]
+        if all(0 <= lo and hi <= WORD_TOP for lo, hi in ranges):
+            pick = min if op == "min" else max
+            return pick(r[0] for r in ranges), pick(r[1] for r in ranges)
+
+    return 0, WORD_TOP
+
+
+def is_word(exp, bounds=None):
+    """Whether exp, as an integer (see value_range), is a word."""
+    lo, hi = value_range(exp, bounds)
+    return 0 <= lo and hi <= WORD_TOP
+
+
+def shift_sign(exp):
+    """
+    1 if exp, as an integer (see value_range), is a word (a shift left by
+    it), -1 if minus it is (a shift right), 0 if it's 0, None if it's not
+    known which.
+    """
+    if exp == 0:
+        return 0
+    lo, hi = value_range(exp)
+    if 0 <= lo and hi <= WORD_TOP:
+        return 1
+    if -WORD_TOP <= lo and hi <= 0:
+        return -1
+    return None
+
+
+def readable_mask(size, offset, shl):
+    """
+    Whether a mask with these can be printed as what it is: its size and
+    offset words, and its shift one way or the other (see shift_sign).
+    """
+    return is_word(size) and is_word(offset) and shift_sign(shl) is not None
+
+
 @cached
 def simplify(exp):
     if opcode(exp) == "max":
@@ -967,9 +1159,76 @@ def strategy_final(size, offset, shl, exp_size, exp_offset, exp_shl, exp):
     )
 
 
+def proven_le(left, right):
+    """left <= right for any value of what they're made of (see value_range)"""
+    return value_range(sub_op(right, left))[0] >= 0
+
+
+def _proven_pick(cands, first):
+    """the one of cands that first(one, other) proves to be first, else None"""
+    for c in cands:
+        if all(c == o or first(c, o) for o in cands):
+            return c
+    return None
+
+
+def strategy_proven(size, offset, shl, exp_size, exp_offset, exp_shl, exp):
+    """
+    A mask of a mask, as strategy_1 does it, but only as far as it's proven
+    (see value_range), and when what it makes can be printed as it is (see
+    readable_mask): else it stays a mask of a mask.
+    """
+    # where the bits of the inner mask end up (the ones of its word), and
+    # the bits the outer one keeps
+    inner_right = add_op(exp_offset, exp_shl)
+    inner_left = add_op(exp_offset, exp_size, exp_shl)
+    outer_right = offset
+    outer_left = add_op(offset, size)
+
+    if (
+        proven_le(inner_left, inner_right)
+        or proven_le(inner_left, outer_right)
+        or proven_le(outer_left, inner_right)
+        or proven_le(inner_left, 0)
+        or proven_le(256, inner_right)
+    ):
+        return 0
+
+    left = _proven_pick((outer_left, inner_left, 256), proven_le)
+    right = _proven_pick((outer_right, inner_right, 0), lambda a, b: proven_le(b, a))
+    final = strategy_final(size, offset, shl, exp_size, exp_offset, exp_shl, exp)
+    if left is None or right is None:
+        return final
+
+    new_size = sub_op(left, right)
+    new_offset = sub_op(right, exp_shl)
+    if proven_le(new_size, 0):
+        return 0
+    if not is_word(new_size):
+        return final
+    if not all_concrete(new_size, new_offset) and all_concrete(
+        size, offset, exp_size, exp_offset
+    ):
+        # a size or an offset made of a shift (uint8(x << n), 2 * (1 << n)):
+        # the two masks read better
+        return final
+
+    res = mask_op(exp, size=new_size, offset=new_offset, shl=add_op(shl, exp_shl))
+    if opcode(res) == "mask_shl" and not readable_mask(*res[1:4]):
+        return final
+    return res
+
+
 def mask_mask_op(size, offset, shl, exp_size, exp_offset, exp_shl, exp):
     if all_concrete(offset, shl, exp_offset, exp_shl, exp_size, size):
         return strategy_concrete(size, offset, shl, exp_size, exp_offset, exp_shl, exp)
+
+    if readable_mask(size, offset, shl) and readable_mask(
+        exp_size, exp_offset, exp_shl
+    ):
+        # (a mask whose shift isn't known to be a left or a right one would
+        # be read as neither)
+        return strategy_proven(size, offset, shl, exp_size, exp_offset, exp_shl, exp)
 
     strategies = (strategy_0, strategy_1, strategy_2, strategy_3, strategy_final)
 
@@ -1106,15 +1365,25 @@ def apply_mask_to_storage(exp, size, offset, shl):
 
     res = ("storage", stor_size, stor_offset, stor_idx)
 
-    shr = 0
-
     if shl == 0:
         return res
-    else:
-        if (m := match(res, ("storage", size, 0, ":stor_idx"))) and offset == 0:
-            stor_idx = m.stor_idx
-            shr = minus_op(shl)
-            return ("storage", size, shr, stor_idx)
+
+    if type(shl) is not int:
+        # (a field moved left, below, is by a number of bits known)
+        return None
+
+    if shl < 0:
+        # moved right: its bits from -shl on, at 0
+        new_size = add_op(stor_size, shl)
+        if type(new_size) is not int:
+            return None
+        if new_size <= 0:
+            return 0
+        return ("storage", new_size, add_op(stor_offset, -shl), stor_idx)
+
+    if (m := match(res, ("storage", size, 0, ":stor_idx"))) and offset == 0:
+        # a field moved left (see _mask_op)
+        return ("storage", size, -shl, m.stor_idx)
 
 
 def apply_mask(val, size, offset=0, shl=0):
@@ -1155,6 +1424,37 @@ def shr_op(exp, off):
     return mask_op(exp, size=256 - off, offset=off, shr=off)
 
 
+def shl_op(exp, off):
+    """
+    exp << off, off a word: a mask of exp moved left by off - when that's
+    what it is, off being the integer it's made of (see value_range: a word
+    such as 159 - x isn't) and the mask one that can be printed as it is
+    (see readable_mask). Else it's left as it is, ("shl", off, exp).
+    """
+    if type(off) is int:
+        return 0 if off >= 256 else mask_op(exp, shl=off)
+
+    if is_word(off):
+        res = mask_op(exp, shl=off)
+        if _readable(res):
+            return res
+
+    return ("shl", off, exp)
+
+
+def _readable(exp):
+    """whether a mask made by mask_op can be printed as it is"""
+    if type(exp) is int:
+        return True
+    if m := match(exp, ("mask_shl", ":size", ":off", ":shl", Any)):
+        return readable_mask(m.size, m.off, m.shl)
+    if opcode(exp) == "or":
+        return all(_readable(e) for e in exp[1:])
+    if m := match(exp, ("storage", ":size", ":off", Any)):
+        return type(m.size) is int and type(m.off) is int
+    return False
+
+
 def signextend_op(b, val):
     """
     ("signextend", b, val): the lowest 8 * (b + 1) bits of val as a signed
@@ -1163,6 +1463,8 @@ def signextend_op(b, val):
     if type(b) is not int:
         return ("signextend", b, val)
 
+    # (the word of what it was made of)
+    b %= 2**256
     bits = 8 * (b + 1)
     if bits >= 256:
         return val

@@ -20,12 +20,12 @@ from panoramix.core.algebra import (
     add_op,
     apply_mask,
     ge_zero,
+    is_word,
     lt_op,
     may_be_wide,
     minus_op,
-    mul_op,
-    safe_ge_zero,
     safe_le_op,
+    shift_sign,
     sub_op,
     to_bytes,
 )
@@ -1223,7 +1223,7 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         # the bytes of the code of the account (see OUTPUT.md)
         return f"ext_code({pret(m.addr)}).data[{pret(m.start)} len {pret(m.size)}]"
 
-    if opcode(exp) in ("max", "min"):
+    if opcode(exp) in ("max", "min", "byte"):
         _, *terms = exp
         return "{}({})".format(opcode(exp), ", ".join([pret(e) for e in terms]))
 
@@ -1539,28 +1539,44 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
             if type_name is not None:
                 return col(type_name + "(", COLOR_GRAY) + shifted + col(")", COLOR_GRAY)
 
+        if (
+            not all_concrete(offset, shl)
+            and add_op(offset, shl) == 0
+            and is_word(offset)
+            and add_op(size, offset) == 256
+        ):
+            # its bits from offset up, moved down: val >> offset (0 when the
+            # offset is 256 or more, as the mask is then)
+            op_form = COLOR_BOLD + " >> " + ENDC if add_color else " >> "
+            return wrap(
+                operand(val, SHIFT) + op_form + operand(offset, SHIFT + 1), SHIFT
+            )
+
+        sign = shift_sign(shl)
+        mask = ("mask", size, offset, val)
+
         if shl == 0:
-            exp = ("mask", size, offset, val)
+            exp = mask
 
-        elif safe_ge_zero(shl) is not False:
-            if (
-                all_concrete(size, offset, shl)
-                and size + shl == 256
-                and offset == 0
-                and shl > -8
-            ):
-                exp = ("mul", 2 ** exp[3], exp[4])
+        elif sign == 1:
+            if all_concrete(size, offset, shl) and size + shl == 256 and offset == 0:
+                # the bits that the multiplication keeps
+                exp = ("mul", 2**shl, val)
+            elif type(shl) == int and shl < 7:
+                exp = ("mul", 2**shl, mask)
             else:
-                if type(exp[3]) == int and exp[3] < 7 and exp[3] >= -8:
-                    exp = ("mul", 2 ** exp[3], ("mask", exp[1], exp[2], exp[4]))
+                exp = ("shl", shl, mask)
 
-                elif type(exp[3]) == int and exp[3] < 0:
-                    exp = ("shr", -exp[3], ("mask", exp[1], exp[2], exp[4]))
-                else:
-                    exp = ("shl", exp[3], ("mask", exp[1], exp[2], exp[4]))
+        elif sign == -1:
+            right = minus_op(shl)
+            if type(right) == int and right <= 8:
+                exp = ("div", mask, 2**right)
+            else:
+                exp = ("shr", right, mask)
 
         else:
-            exp = ("shr", mul_op(-1, exp[3]), ("mask", exp[1], exp[2], exp[4]))
+            # a shift that may be one way or the other (see OUTPUT.md)
+            exp = ("shift", mask, shl)
 
     if m := match(exp, ("mask", ":size", 0, ":val")):
         size, val = m.size, m.val
@@ -1595,6 +1611,9 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
             return pret(("mod", val, 2**size), parentheses=ctx)
         else:
             return "Mask({}, {}, {})".format(pret(size), pret(offset), pret(val))
+
+    if m := match(exp, ("shift", ":val", ":amount")):
+        return f"shift({pret(m.val)}, {pret(m.amount)})"
 
     if (m := match(exp, (":op", ":off", ":val"))) and (
         m.op == "sar" or (m.op == "shr" and not isinstance(m.off, int))
