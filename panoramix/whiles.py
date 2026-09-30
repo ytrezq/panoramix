@@ -55,7 +55,7 @@ from panoramix.prettify import (
     pprint_trace,
     pretty_repr,
 )
-from panoramix.simplify import simplify_trace
+from panoramix.simplify import ENDS_EXECUTION, simplify_trace
 from panoramix.utils.helpers import (
     C,
     contains,
@@ -154,6 +154,19 @@ def is_revert(trace):
     return opcode(trace[0]) in ("revert", "invalid")
 
 
+def falls_through(trace):
+    """
+    Whether a path of trace gets to its end: goes on with what follows it,
+    rather than to a label (goto) or out of the call.
+    """
+    if not trace:
+        return True
+    last = trace[-1]
+    if opcode(last) == "if":
+        return falls_through(last[2]) or falls_through(last[3])
+    return opcode(last) not in ("goto", "undefined") + ENDS_EXECUTION
+
+
 def to_while(trace, jd, path=None):
     """
     `trace` is what follows a loop label, `jd` the label. Returns
@@ -228,6 +241,14 @@ def to_while(trace, jd, path=None):
                 # the loop goes on whichever way the if goes - if it can be
                 # left at all, it's from inside the branches (a return, or
                 # an if with an exit of its own)
+                return [], path + [line], trace, ("bool", 1)
+
+            body, out = (if_true, if_false) if jd in jds_true else (if_false, if_true)
+            if out and falls_through(body):
+                # A path of the body gets to its end: it leaves the loop -
+                # a break, an early return (solc's return code, shared) - and
+                # goes on with what follows the if, not with the exit
+                # branch. After a `while cond:`, it would.
                 return [], path + [line], trace, ("bool", 1)
 
             if jd in jds_true:
