@@ -85,6 +85,28 @@ def cmp_to_key(mycomp):
     return K(mycomp)
 
 
+def value_bits(exp):
+    """How many of the lowest bits of exp may not be 0, as far as it's known."""
+    if type(exp) == int and exp >= 0:
+        return exp.bit_length()
+
+    if opcode(exp) in ("bool", "iszero", "eq", "lt", "gt", "le", "ge"):
+        return 1
+    if opcode(exp) in ("slt", "sgt", "sle", "sge"):
+        return 1
+
+    if m := match(exp, ("mask_shl", ":int:size", ":int:off", ":int:shl", ":x")):
+        top = min(m.off + m.size, value_bits(m.x))
+        if top <= m.off:
+            return 0
+        return max(0, min(top + m.shl, 256))
+
+    if (m := match(exp, ("storage", ":int:size", ":int:off", Any))) and m.off >= 0:
+        return m.size
+
+    return 256
+
+
 def split_or(value):
     orig_value = value
 
@@ -225,14 +247,26 @@ def split_or(value):
 
     pos = 0
 
-    for r in ret_rows:
+    for idx, r in enumerate(ret_rows):
         if type(r[1]) != int or type(r[0]) != int:
+            return [(256, 0, orig_value)]
+        if r[1] < pos:
+            # the parts overlap: their bits are or-ed
             return [(256, 0, orig_value)]
         if r[1] > pos:
             result.append((r[1] - pos, pos, 0))
 
-        result.append(r)
-        pos = r[1] + r[0]
+        size, offset, value = r
+        if idx + 1 < len(ret_rows) and type(ret_rows[idx + 1][1]) == int:
+            room = ret_rows[idx + 1][1] - offset
+            if room < size and value_bits(value) <= room:
+                # a mask wider than the value in it, up to the next part:
+                # e.g. a bool shifted left, Mask(32, 0, bool) << 224, next
+                # to what's above its byte
+                size = room
+
+        result.append((size, offset, value))
+        pos = offset + size
 
     if pos < 256:
         result.append((256 - pos, pos, 0))
