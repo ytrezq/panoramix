@@ -30,6 +30,7 @@ from panoramix.core.algebra import (
 )
 from panoramix.core.arithmetic import is_zero, simplify_bool
 from panoramix.core.masks import get_bit, mask_to_type
+from panoramix.core.memloc import byte_elements, sized, sizeof
 from panoramix.loader import Loader
 from panoramix.matcher import Any, match
 from panoramix.utils.helpers import (
@@ -530,18 +531,18 @@ def pretty_line(r, add_color=True):
         yield "{} = {}({}) {}".format(
             col(m.var_name, COLOR_BLUE),
             m.func_name,
-            prettify(m.params, add_color=add_color, parentheses=False),
+            ", ".join(pretty_memory(m.params, add_color=add_color)),
             COLOR_GRAY + "# precompiled" + ENDC,
         )
 
     elif m := match(r, ("create", ":wei", ":code")):
         yield f"create contract with {pret(m.wei)} wei"
-        yield f"                code: {pret(m.code)}"
+        yield f"                code: {', '.join(pretty_memory(m.code, add_color=add_color))}"
 
     elif m := match(r, ("create2", ":wei", ":code", ":salt")):
         yield f"create2 contract with {pret(m.wei)} wei"
         yield f"                salt: {pret(m.salt)}"
-        yield f"                code: {pret(m.code)}"
+        yield f"                code: {', '.join(pretty_memory(m.code, add_color=add_color))}"
 
     elif m := match(r, ("call", ":gas", ":addr", ":wei", ":fname", ":fparams")):
         gas, addr, wei, fname, fparams = m.gas, m.addr, m.wei, m.fname, m.fparams
@@ -710,6 +711,10 @@ def pretty_line(r, add_color=True):
 
         if op == "revert":
             op = "revert with"
+
+        if op == "revert with" and match(param, ("bytes", 4, int)):
+            # a custom error without params: its selector alone
+            param = ("data", param)
 
         res_mem = pretty_memory(param, add_color=True)
         ret_val = ", ".join(res_mem)
@@ -1052,7 +1057,8 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         return "{} {} {}".format(pret(m.loc), col("len", COLOR_HEADER), pret(m.size))
 
     if opcode(exp) == "data":
-        return ", ".join(pretty_memory(exp, add_color=add_color))
+        # the bytes of its elements one after the other
+        return "concat(" + ", ".join(pretty_memory(exp, add_color=add_color)) + ")"
 
     if m := match(exp, ("bytes", ":size", ":val")):
         return pretty_bytes(m.size, m.val, add_color, parentheses=ctx)
@@ -1071,18 +1077,11 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
 
     if opcode(exp) == "arr" and len(exp) > 1:
         _, l, *terms = exp
-        chunks = [data_bytes(t) for t in terms]
-        if type(l) == int and None not in chunks:
-            # a string
-            b = b"".join(chunks)
-            if len(b) >= l and not any(b[l:]) and (text := pretty_text(b[:l])):
-                return text
-
         return (
             col("Array(len=", COLOR_GRAY)
             + pret(l)
             + col(", data=", COLOR_GRAY)
-            + pret(("data",) + tuple(terms))
+            + ", ".join(pretty_memory(("data",) + tuple(terms), add_color=add_color))
             + col(")", COLOR_GRAY)
         )
 
@@ -1175,8 +1174,13 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         return f"eth.balance({pret(m.addr)})"
 
     if opcode(exp) == "sha3":
+        # of the bytes of its terms one after the other
         _, *terms = exp
-        return "sha3({})".format(", ".join([pret(e) for e in terms]))
+        if len(terms) == 1 and opcode(terms[0]) == "data":
+            terms = terms[0][1:]
+        return "sha3({})".format(
+            ", ".join(pretty_memory(("data",) + tuple(terms), add_color=add_color))
+        )
 
     #    if exp ~ ('mask_shl', 251, 5, 0, :val):
     #        return pret(('mul', 32, val))
@@ -1289,7 +1293,11 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         return pret(("var", m.idx)) + " = " + pret(m.val, parentheses=False)
 
     if m := match(exp, ("setmem", ":idx", ":val")):  # --,,--
-        return pret(("mem", m.idx)) + " = " + pret(m.val)
+        val = m.val
+        if type(val) == int and val >= 2**256 and (r := match(m.idx, ("range", Any, ":int:n"))):
+            # bytes of more than a word: as many as the range
+            val = ("bytes", r.n, val)
+        return pret(("mem", m.idx)) + " = " + ", ".join(pretty_memory(val, add_color))
 
     if exp == ("mask_shl", 32, 224, 0, ("cd", 0)):
         # the first 4 bytes of the calldata, as msg.sig
@@ -1649,14 +1657,17 @@ def event_abi(topic):
 
 def pretty_bytes(size, val, add_color=False, parentheses=False):
     """
-    ("bytes", size, val): a word is shown as its value, a number as the hex
-    of its `size` bytes, anything else as its value with its width.
+    ("bytes", size, val): a word is shown as its value, text as a string,
+    anything else as its value with its width - Bytes(size, val).
     """
     if size == 32:
         return prettify(val, add_color=add_color, parentheses=parentheses)
 
-    if type(val) == int and type(size) == int:
-        return "0x" + format(val, f"0{2 * size}x")
+    if type(val) == int and type(size) == int and 0 <= val < 2 ** (8 * size):
+        if text := pretty_text(val.to_bytes(size, "big"), short=True):
+            return text
+        val = "0x" + format(val, f"0{2 * size}x") if val else "0"
+        return f"{colorize('Bytes(', COLOR_GRAY, add_color)}{size}{colorize(', ', COLOR_GRAY, add_color)}{val}{colorize(')', COLOR_GRAY, add_color)}"
 
     return (
         colorize("Bytes(", COLOR_GRAY, add_color)
@@ -1734,10 +1745,15 @@ def data_bytes(exp):
     return None
 
 
-def pretty_text(b):
-    """The bytes b as a string literal, if they're text."""
+def pretty_text(b, short=False):
+    """
+    The bytes b as a string literal, if they're text: with letters or
+    digits, or any printable ones if short (a separator).
+    """
     text = b.decode("latin-1")
-    if not all(c in TEXT_CHARS for c in text) or not any(c.isalnum() for c in text):
+    if not text or not all(c in TEXT_CHARS for c in text):
+        return None
+    if not any(c.isalnum() for c in text) and not (short and len(text) <= 2):
         return None
 
     for char, escaped in (
@@ -1750,6 +1766,19 @@ def pretty_text(b):
         text = text.replace(char, escaped)
 
     return f"'{text}'"
+
+
+def arr_text(exp):
+    """An ("arr", len, ...) of text: as a string literal."""
+    if opcode(exp) != "arr" or len(exp) < 2:
+        return None
+    _, l, *terms = exp
+    chunks = [data_bytes(t) for t in terms]
+    if type(l) == int and None not in chunks:
+        b = b"".join(chunks)
+        if len(b) >= l and not any(b[l:]) and (text := pretty_text(b[:l])):
+            return text
+    return None
 
 
 def pretty_memory(exp, add_color=False):
@@ -1787,9 +1816,23 @@ def pretty_memory(exp, add_color=False):
 
         el = exp[idx]
 
+        first = idx == 0 or (idx == 1 and match(exp[0], ("bytes", 4, Any)))
+        if first and idx == len(exp) - 1 and (text := arr_text(el)):
+            # all the data is an ABI-encoded string (after a selector)
+            res.append(text)
+            idx += 1
+            continue
+
         # an ABI-encoded string: its offset, its length, the words of its
-        # bytes, padded with zeroes
-        if word(el) == 32 and idx + 1 < len(exp) and type(word(exp[idx + 1])) == int:
+        # bytes, padded with zeroes - when it's all the data is (after a
+        # selector): return 'text', revert with Error(string), 'text'. A
+        # string elsewhere is its bytes.
+        if (
+            first
+            and word(el) == 32
+            and idx + 1 < len(exp)
+            and type(word(exp[idx + 1])) == int
+        ):
             length = word(exp[idx + 1])
             size = 32 * ((length + 31) // 32)
             # its bytes, in as many parts as they come
@@ -1799,7 +1842,7 @@ def pretty_memory(exp, add_color=False):
                     break
                 b += chunk
                 end += 1
-            if 0 < length and len(b) == size:
+            if 0 < length and len(b) == size and end == len(exp):
                 if not any(b[length:]) and (text := pretty_text(b[:length])):
                     res.append(text)
                     idx = end
@@ -1815,7 +1858,52 @@ def pretty_memory(exp, add_color=False):
             idx = end
             continue
 
-        res.append(prettify(el, add_color=add_color, parentheses=False))
+        res.append(pretty_element(el, add_color))
         idx = idx + 1
 
     return tuple(res)
+
+
+def with_width(el):
+    """
+    An element of bytes (of a data, a sha3, a return...) whose width isn't
+    a word, with it: Bytes(n, el). It's in how the element is written
+    (see memloc.sizeof), which rewrites for display don't keep - a mask of
+    the lowest 8 bits becomes a division, uint8(x >> 8) x / 256.
+    """
+    if sized(el):
+        return el
+    if m := match(el, ("stor", ":size", ":off", Any)):
+        # a field of the storage (see sparser): as wide as it is
+        width = m.size
+    else:
+        width = sizeof(el)
+    if width == 256 or width is None:
+        return el
+    if type(width) == int:
+        if width % 8 or width <= 0:
+            return el
+        return ("bytes", width // 8, el)
+    return ("bytes", ("div", width, 8), el)
+
+
+def fix_widths(trace):
+    """the elements of what is bytes, with their width when it isn't a word"""
+
+    def f(exp):
+        if type(exp) != tuple:
+            return exp
+        positions = byte_elements(exp)
+        if opcode(exp) in ("call", "staticcall", "callcode", "delegatecall"):
+            # but the selector: it's printed as the function it calls
+            positions = positions[-1:] if positions and positions[-1] == len(exp) - 1 else ()
+        if not positions:
+            return exp
+        return tuple(with_width(e) if i in positions else e for i, e in enumerate(exp))
+
+    return replace_f(trace, f)
+
+
+def pretty_element(el, add_color=False):
+    """an element of a data: a word, or Bytes(n, value)"""
+    return prettify(with_width(el), add_color=add_color, parentheses=False)

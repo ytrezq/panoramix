@@ -4,7 +4,13 @@ import logging
 import panoramix.folder as folder
 import panoramix.sparser as sparser
 from panoramix.matcher import Any, match
-from panoramix.prettify import pprint_ast, pprint_trace, prettify, pretty_stor
+from panoramix.prettify import (
+    fix_widths,
+    pprint_ast,
+    pprint_trace,
+    prettify,
+    pretty_stor,
+)
 from panoramix.utils.helpers import (
     COLOR_GREEN,
     ENDC,
@@ -206,6 +212,7 @@ class Contract:
 
     def make_ast(self, trace):
         trace = folder.fold(trace)
+        trace = fix_widths(trace)
 
         def store_to_set(line):
             if m := match(line, ("store", ":size", ":off", ":idx", ":val")):

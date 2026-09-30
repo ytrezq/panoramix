@@ -7,7 +7,7 @@ from panoramix.core.arithmetic import simplify_bool
 from panoramix.core.masks import mask_to_type
 from panoramix.core.memloc import byte_elements, keep_width
 from panoramix.matcher import Any, match
-from panoramix.prettify import explain_text, pprint_logic, prettify
+from panoramix.prettify import explain_text, pprint_logic, prettify, pretty_memory
 from panoramix.utils.helpers import (
     COLOR_BLUE,
     COLOR_BOLD,
@@ -462,7 +462,8 @@ class Function(EasyCopy):
                 + str(self.color_name.split("()")[0])
                 + " = "
                 + COLOR_BOLD
-                + prettify(val, parentheses=False)
+                # what the function returns: its data, as a return's
+                + ", ".join(pretty_memory(val))
                 + ENDC
             ]
 
