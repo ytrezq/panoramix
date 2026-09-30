@@ -531,13 +531,13 @@ def pretty_line(r, add_color=True):
         )
 
     elif m := match(r, ("create", ":wei", ":code")):
-        yield f"create contract with {m.wei} wei"
-        yield f"                code: {prettify(m.code)}"
+        yield f"create contract with {pret(m.wei)} wei"
+        yield f"                code: {pret(m.code)}"
 
     elif m := match(r, ("create2", ":wei", ":code", ":salt")):
-        yield f"create2 contract with {m.wei} wei"
-        yield f"                salt: {prettify(m.salt)}"
-        yield f"                code: {prettify(m.code)}"
+        yield f"create2 contract with {pret(m.wei)} wei"
+        yield f"                salt: {pret(m.salt)}"
+        yield f"                code: {pret(m.code)}"
 
     elif m := match(r, ("call", ":gas", ":addr", ":wei", ":fname", ":fparams")):
         gas, addr, wei, fname, fparams = m.gas, m.addr, m.wei, m.fname, m.fparams

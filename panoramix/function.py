@@ -421,7 +421,7 @@ class Function(EasyCopy):
                 + str(self.color_name.split("()")[0])
                 + " = "
                 + COLOR_BOLD
-                + prettify(val)
+                + prettify(val, parentheses=False)
                 + ENDC
             ]
 
