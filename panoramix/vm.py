@@ -386,6 +386,21 @@ class Node:
             if opcode(fact) not in MEMORY_FACTS
         )
 
+        # Except the code addresses in memory - where Vyper keeps the return
+        # address of a private function, e.g. one with a loop - for as long
+        # as no iteration changes them: see continue_loops.
+        rejected = getattr(self, "rejected_memory", ())
+        self.assumed_memory = tuple(
+            fact
+            for fact in loop_dest.known
+            if opcode(fact) == "memory"
+            and fact[2] == 32
+            and type(fact[3]) == int
+            and fact[3] in self.vm.loader.jump_dests
+            and fact not in rejected
+        )
+        self.known += self.assumed_memory
+
     def set_prev(self, prev):
         self.prev = prev
         self.depth = prev.depth + 1
@@ -616,6 +631,27 @@ class VM(EasyCopy):
             assert op == "loop"
 
             if loop_dest.is_label():
+                broken = tuple(
+                    fact
+                    for fact in getattr(loop_dest, "assumed_memory", ())
+                    if fact not in node.known
+                )
+                if broken:
+                    # an iteration changes what was assumed in memory at the
+                    # start of the loop: explored again without it
+                    loop_dest.rejected_memory = (
+                        getattr(loop_dest, "rejected_memory", ()) + broken
+                    )
+                    loop_dest.assumed_memory = tuple(
+                        f for f in loop_dest.assumed_memory if f not in broken
+                    )
+                    loop_dest.known = tuple(
+                        f for f in loop_dest.known if f not in broken
+                    )
+                    loop_dest.trace = None
+                    loop_dest.next = []
+                    return
+
                 old_stack = loop_dest.stack
                 beginvars = loop_dest.label.begin_vars
                 set_vars = []
