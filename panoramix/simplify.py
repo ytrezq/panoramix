@@ -1928,7 +1928,8 @@ def cleanup_mems(trace, used_after=None):
     if possible
 
     `used_after` is what gets executed after `trace`, when `trace` is a
-    branch of an if whose branches merge again.
+    branch of an if whose branches merge again, or the body of a loop that
+    a path leaves by ending.
 
     """
 
@@ -1971,7 +1972,10 @@ def cleanup_mems(trace, used_after=None):
 
         elif opcode(line) == "while":
             _, cond, path, *rest = line
-            path = cleanup_mems(path)
+            # a path of the body that ends leaves the loop (see whiles.py):
+            # what follows the loop may read what it wrote - solc's return
+            # data, written on each way out of the loop
+            path = cleanup_mems(path, trace[idx + 1 :] + used_after)
             res.append(
                 (
                     "while",
