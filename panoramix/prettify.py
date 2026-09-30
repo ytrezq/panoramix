@@ -1219,8 +1219,9 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
     if m := match(exp, ("extcodesize", ":addr")):
         return f"ext_code.size({pret(m.addr)})"
 
-    if m := match(exp, ("extcodecopy", ":addr", ":loc")):
-        return f"ext_code.copy({pret(m.addr)}, {pret(m.loc)})"
+    if m := match(exp, ("extcodecopy", ":addr", ("range", ":start", ":size"))):
+        # the bytes of the code of the account (see OUTPUT.md)
+        return f"ext_code({pret(m.addr)}).data[{pret(m.start)} len {pret(m.size)}]"
 
     if opcode(exp) in ("max", "min"):
         _, *terms = exp

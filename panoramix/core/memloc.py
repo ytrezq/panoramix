@@ -424,6 +424,9 @@ def sizeof(exp):  # returns size of expression in *bits*
     if m := match(exp, ("mem", ("range", Any, ":size_bytes"))):
         return bits(m.size_bytes)
 
+    if m := match(exp, ("extcodecopy", Any, ("range", Any, ":size_bytes"))):
+        return bits(m.size_bytes)
+
     assert not match(exp, ("mem", ":idx"))
     assert not match(exp, ("arr", ":l", Any))
 
@@ -473,11 +476,11 @@ BYTES_OPERANDS = {
 def sized(exp):
     """
     Whether exp, as an element of bytes, says how many bytes it is - a data,
-    a Bytes(n, v), an ABI array, a range of memory or of calldata... - rather
-    than by how it's written (see sizeof).
+    a Bytes(n, v), an ABI array, a range of memory or of calldata, of the
+    code of an account... - rather than by how it's written (see sizeof).
     """
     op = opcode(exp)
-    return op in ("bytes", "data", "arr", "mem", "sall") or is_array(op)
+    return op in ("bytes", "data", "arr", "mem", "sall", "extcodecopy") or is_array(op)
 
 
 def width_of(exp):
@@ -880,6 +883,11 @@ def slice_exp(exp, left, right, width=None):
             return (m.op, add_op(m.rleft, left), size)
         else:
             return None
+
+    if m := match(exp, ("extcodecopy", ":addr", ("range", ":rleft", ":rlen"))):
+        if safe_le_op(add_op(left, size), m.rlen):
+            return ("extcodecopy", m.addr, ("range", add_op(m.rleft, left), size))
+        return None
 
     if opcode(exp) == "data" and all_concrete(left, right) and left < right:
         # the parts of the data between left and right: a mask of it would

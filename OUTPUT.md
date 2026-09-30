@@ -19,6 +19,9 @@ something for sure, it says less (a raw `stor[...]`, `mem[...]`, a
   isn't 0. `Mask(size, off, x)` is the bits `off` to `off + size` of `x`, in
   place (the others 0). `ceil32(x)` / `floor32(x)` round to a multiple of 32,
   `min(x, y)` / `max(x, y)` are the smaller and the larger.
+- `ext_code.size(a)` and `ext_code.hash(a)` are the size and the hash of the
+  code of the account `a` (EXTCODESIZE, EXTCODEHASH), `ext_code(a).data[s len
+  n]` its `n` bytes from `s` (zeroes past its end).
 
 ## Operators
 
