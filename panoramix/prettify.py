@@ -1040,7 +1040,8 @@ def pretty_num(exp, add_color):
             type(exp) == int and (exp & 2**256 - 1) < 8**30
         ):  # if it's larger than 30 bytes, it's probably
             # an address, not a negative number
-            return str(to_real_int(exp))
+            # (the word it is: -2**256 + 128 is 128)
+            return str(to_real_int(exp & 2**256 - 1))
 
         elif exp > 0:
             return hex(exp)
