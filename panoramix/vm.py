@@ -265,9 +265,12 @@ class Node:
         self.set_prev(loop_dest)
 
         # This node is now the body of a loop, executed for every iteration,
-        # and what we learned about the state during the first one doesn't
-        # necessarily hold for the next ones.
-        self.known = forget(self.known, VOLATILE)
+        # the first one included: what is known there is what was known
+        # before the loop, not what the first iteration found out on its way
+        # here (its checks are made again, and the first iteration is no
+        # longer decompiled on its own). And what we learned about the state
+        # before the loop doesn't necessarily hold for the next iterations.
+        self.known = forget(loop_dest.known, VOLATILE)
 
     def set_prev(self, prev):
         self.prev = prev
