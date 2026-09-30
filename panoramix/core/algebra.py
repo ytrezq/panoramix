@@ -1049,10 +1049,12 @@ def _mask_op(exp, size=256, offset=0, shl=0, shr=0):
             and shl >= 8
             and size == 256
             and (new_exp := apply_mask_to_storage(exp, size - shl, offset, shl))
+            is not None
         ):
             return new_exp
 
-        elif new_exp := apply_mask_to_storage(exp, size, offset, shl):
+        elif (new_exp := apply_mask_to_storage(exp, size, offset, shl)) is not None:
+            # (0 when the mask is above the bits read: Mask(56, 200, uint200(x)))
             return new_exp
 
     if opcode(exp) == "or":
