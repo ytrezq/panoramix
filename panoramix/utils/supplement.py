@@ -110,4 +110,33 @@ def fetch_sig(hash) -> Optional[dict]:
     finally:
         db.close()
 
-    return json.loads(rows[0][0]) if rows else None
+    if not rows:
+        return None
+
+    abi = json.loads(rows[0][0])
+    # A quarter of the dump is what a decompiler guessed of functions whose
+    # signature wasn't known - unknowna8b0c2ca(uint64 _param1) for a function
+    # of an address - not signatures: one is only where it hashes to the
+    # selector.
+    return abi if hashes_to(abi, hash) else None
+
+
+def hashes_to(abi, selector):
+    """If the signature of abi hashes to the selector (0x and its 8 digits)."""
+    from eth_hash.auto import keccak
+
+    from panoramix.utils.signatures import canonical_type
+
+    text = "{}({})".format(
+        abi.get("name", ""),
+        ",".join(
+            canonical_type(i["type"], i.get("components"))
+            for i in abi.get("inputs", [])
+        ),
+    )
+    # (the selectors of the libraries of old compilers hash a storage pointer
+    # without its space, `getMin(uint32[]storage)`)
+    return any(
+        "0x" + keccak(t.encode())[:4].hex() == selector
+        for t in (text, text.replace(" ", ""))
+    )

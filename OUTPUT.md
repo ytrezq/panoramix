@@ -82,6 +82,10 @@ how wide it is:
 
 ## Functions and params
 
+- `def f(uint256 a, ...)` is the function whose selector is the hash of that
+  signature, when it's known; else `unknown1234abcd(...)` (its selector), its
+  params the words of calldata it reads, of the types how it checks them
+  suggests.
 - `def f(...) payable:` runs its body whatever ether it's sent (`call.value`).
   `def f(...): # not payable` reverts with no data when it's sent any,
   before anything else - `# not payable (invalid)`: runs an invalid opcode
