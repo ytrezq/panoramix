@@ -476,13 +476,15 @@ def pretty_line(r, add_color=True):
         _, params, *topics = r
 
         # the params of a log are its data, then its topics after the first,
-        # which is the signature of the event (unless it's anonymous)
-        res_params = pretty_memory(params, add_color=False)
-        if type(res_params) == str:  # "empty()"
-            res_params = ()
-        res_params += tuple(
+        # which is the signature of the event (unless it's anonymous) - the
+        # topics are the indexed ones
+        data_params = pretty_memory(params, add_color=False)
+        if type(data_params) == str:  # "empty()"
+            data_params = ()
+        topic_params = tuple(
             prettify(t, add_color=False, parentheses=False) for t in topics[1:]
         )
+        res_params = data_params + topic_params
 
         abi = event_abi(topics[0]) if topics else None
 
@@ -492,11 +494,13 @@ def pretty_line(r, add_color=True):
 
         if abi is None:
             if type(topics[0]) == int:
-                e = padded_hex(topics[0], 64)[:10]
+                # the signature of an event this doesn't know: all of it
+                e = padded_hex(topics[0], 64)
             else:
                 e = prettify(topics[0], add_color=False, parentheses=False)
+            listed = data_params + tuple("indexed " + t for t in topic_params)
             yield col(
-                f"log {e}{':' if len(res_params)>0 else ''} {', '.join(res_params)}",
+                f"log {e}{':' if len(listed) > 0 else ''} {', '.join(listed)}",
                 COLOR_GRAY,
             )
             return
@@ -516,7 +520,10 @@ def pretty_line(r, add_color=True):
             yield col(f"log {e}", COLOR_GRAY)
 
         elif len(in_log) == len(res_params):
-            p_list = [(i["type"], i["name"], p) for i, p in zip(in_log, res_params)]
+            p_list = [
+                (i["type"] + (" indexed" if i.get("indexed") else ""), i["name"], p)
+                for i, p in zip(in_log, res_params)
+            ]
             # in the order of the declaration
             p_list = [p_list[in_log.index(i)] for i in inputs]
 
@@ -541,10 +548,9 @@ def pretty_line(r, add_color=True):
 
                 yield col(" " * ind + f"{pline(last)})", COLOR_GRAY)
         else:
-            yield col(f"log {e}:", COLOR_GRAY)
-            ind = " " * len(f"log {fname}(")
-            for p in res_params:
-                yield col(ind + p + ",", COLOR_GRAY)
+            # not the params of the abi: the signature, then what the log has
+            listed = data_params + tuple("indexed " + t for t in topic_params)
+            yield col(f"log {e}: {', '.join(listed)}", COLOR_GRAY)
 
     elif m := match(r, ("callcode", ":gas", ":addr", ":wei", ":fname", ":fparams")):
         gas, addr, wei, fname, fparams = m.gas, m.addr, m.wei, m.fname, m.fparams
