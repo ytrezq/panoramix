@@ -332,7 +332,7 @@ def forget(known, names):
 def is_known(exp, known):
     """Evaluate `exp` to True/False if it is decided by the known conditions, None otherwise."""
     for fact in reversed(known):
-        if opcode(fact) in MEMORY_FACTS:
+        if opcode(fact) in MEMORY_FACTS or opcode(fact) == "var_bits":
             continue
         res = arithmetic.eval_bool(exp, fact, symbolic=False)
         if res is not None:
@@ -1242,7 +1242,10 @@ class VM(EasyCopy):
         at the old length.
         """
         reads = []
-        for item in self.stack.stack:
+        # (and what the memory was written with: mem[64] = x + returndatasize
+        # is x + the size of the data a call returned, until it's written)
+        values = [fact[3] for fact in self.known if opcode(fact) == "memory"]
+        for item in self.stack.stack + [v for v in values if v is not None]:
             for r in changed_reads(item, op, target):
                 if r not in reads:
                     reads.append(r)
@@ -1254,6 +1257,16 @@ class VM(EasyCopy):
             self.stack.stack = [
                 replace(item, r, ("var", vname)) for item in self.stack.stack
             ]
+            self.known = tuple(
+                fact[:3] + (replace(fact[3], r, ("var", vname)),)
+                if opcode(fact) == "memory" and fact[3] is not None
+                else fact
+                for fact in self.known
+            )
+            if (b := max_value_bits(r)) <= 128:
+                # what it was is as small as that (a size, say): for where
+                # memory is written (see bound), not to decide conditions
+                self.known += (("var_bits", ("var", vname), b),)
 
     def apply_stack(self, ret, line):
         def trace(exp, *format_args):
