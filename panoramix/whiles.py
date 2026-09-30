@@ -36,7 +36,7 @@ from panoramix.core.algebra import (
     to_bytes,
     try_add,
 )
-from panoramix.core.arithmetic import is_zero, to_real_int
+from panoramix.core.arithmetic import is_volatile, is_zero, to_real_int
 from panoramix.core.masks import get_bit, to_mask, to_neg_mask
 from panoramix.core.memloc import (
     apply_mask_to_range,
@@ -114,11 +114,11 @@ def make(trace):
 
         elif m := match(line, ("label", ":jd", ":vars", ...)):
             jd, vars = m.jd, m.vars
-            try:
-                before, inside, remaining, cond = to_while(trace[idx + 1 :], jd)
-            except Exception:
-                logger.exception("couldn't make loop for line %s, omitting it.", line)
-                continue
+            # (a loop that can't be made fails the function: without it, what
+            # follows the label would read as run once)
+            before, inside, remaining, cond = to_while(
+                trace[idx + 1 :], jd, begin=[v_val for _, _, v_val in vars]
+            )
 
             inside = make(inside)
             remaining = make(remaining)
@@ -167,10 +167,67 @@ def falls_through(trace):
     return opcode(last) not in ("goto", "undefined") + ENDS_EXECUTION
 
 
-def to_while(trace, jd, path=None):
+# lines that change nothing an expression reads (but variables, see sets)
+PURE_LINES = (
+    "setvar",
+    "if",
+    "while",
+    "label",
+    "goto",
+    "continue",
+    "jump",
+    "jumpdest",
+    "undefined",
+    "log",
+) + ENDS_EXECUTION
+
+
+def sets(trace):
+    """The variables trace sets, at any depth."""
+    return set(find_f_list(trace, lambda e: [e[1]] if opcode(e) == "setvar" else []))
+
+
+def writes(trace):
+    """Whether trace may change what an expression reads: memory, storage..."""
+    for line in trace:
+        if type(line) is list:
+            if writes(line):
+                return True
+        elif opcode(line) == "if":
+            if writes(line[2]) or writes(line[3]):
+                return True
+        elif opcode(line) == "while":
+            if writes(line[2]):
+                return True
+        elif type(line) is tuple and opcode(line) not in PURE_LINES:
+            return True
+    return False
+
+
+def evaluated_after(path, values):
     """
-    `trace` is what follows a loop label, `jd` the label. Returns
-    (before, inside, remaining, cond) so that the loop can be written as:
+    Whether the values - of loop variables - are the same evaluated after
+    path as before it: none reads a variable path sets, nor what it may
+    write.
+    """
+    names = sets(path)
+    if find_f_list(
+        values,
+        lambda e: (
+            [e]
+            if type(e) is tuple and len(e) == 2 and e[0] == "var" and e[1] in names
+            else []
+        ),
+    ):
+        return False
+    return not (writes(path) and any(is_volatile(v) for v in values))
+
+
+def to_while(trace, jd, path=None, begin=()):
+    """
+    `trace` is what follows a loop label, `jd` the label, `begin` the values
+    of the loop variables at the start. Returns (before, inside, remaining,
+    cond) so that the loop can be written as:
 
         before
         while cond:
@@ -182,14 +239,36 @@ def to_while(trace, jd, path=None):
 
     def add_path(line):
         # the lines preceding the exit condition are executed again after
-        # the body, before the next iteration
-        if m := match(line, ("goto", Any, ":svs")):
+        # the body, before the next iteration - that goes on at the label, not
+        # at another one (a continue of an outer loop leaves this one)
+        if m := match(line, ("goto", jd, ":svs")):
             # (the values of the next iteration, all at once)
             path2 = replace_vars(path, {v_idx: v_val for _, v_idx, v_val in m.svs})
 
             return path2 + [line]
         else:
             return [line]
+
+    def rotates(body):
+        """
+        Whether the lines before the exit condition can be done before the
+        loop, with the values the loop starts with, and at the end of each
+        iteration that goes on (add_path), with the values of the next one:
+        the variables are set after them then (the while's, a continue's).
+        The values have to be the same evaluated there: `prev = index + n`
+        with index read in the body, read again there, is the next one. And
+        a continue in the lines would be before the loop.
+        """
+        nexts = [
+            v
+            for goto in find_f_list(
+                body, lambda e: [e] if match(e, ("goto", jd, Any)) else []
+            )
+            for _, _, v in goto[2]
+        ]
+        return jd not in find_f_list(path, get_jds) and evaluated_after(
+            path, nexts + list(begin)
+        )
 
     while trace:
         line, *trace = trace
@@ -251,6 +330,10 @@ def to_while(trace, jd, path=None):
                 # branch. After a `while cond:`, it would.
                 return [], path + [line], trace, ("bool", 1)
 
+            if not rotates(body):
+                # the loop as it is: its exit inside
+                return [], path + [line], trace, ("bool", 1)
+
             if jd in jds_true:
                 if_true = rewrite_trace(if_true, add_path)
                 return path, if_true, if_false + trace, cond
@@ -260,8 +343,10 @@ def to_while(trace, jd, path=None):
 
         elif match(line, ("goto", jd, ...)):
             # the path loops back unconditionally: the exits, if any, are
-            # the reverts and returns along the way
-            return [], rewrite_trace([line], add_path), trace, ("bool", 1)
+            # the reverts and returns along the way - the loop as it is (the
+            # lines before done again after it would skip the first
+            # iteration's)
+            return [], path + [line], trace, ("bool", 1)
 
         elif opcode(line) == "label":
             # a loop in this one, before its exit condition (Vyper tests it
