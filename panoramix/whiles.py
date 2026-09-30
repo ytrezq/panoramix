@@ -190,12 +190,16 @@ def to_while(trace, jd, path=None):
             # again (see vm.merge_branches), that's what follows on the merged
             # path. Nothing otherwise.
 
+            # a branch that reverts is a check on the way to the exit
+            # condition, kept as it is: a require would drop the data of the
+            # revert (a Panic code, a message), and tell an invalid from a
+            # revert no more
             if is_revert(if_true):
-                path.append(("require", is_zero(cond)))
+                path.append(("if", cond, if_true, []))
                 trace = if_false + trace
                 continue
             if is_revert(if_false):
-                path.append(("require", cond))
+                path.append(("if", is_zero(cond), if_false, []))
                 trace = if_true + trace
                 continue
 
