@@ -10,6 +10,7 @@
 """
 
 import logging
+import re
 import sys
 from copy import deepcopy
 from functools import partial
@@ -1718,11 +1719,7 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
 
 
 def pretty_gas(gas, value, add_color):
-    if match(gas, ("mul", 2300, ("iszero", Any))):
-        # should check if _ == value
-        return "2300 * is_zero(value)"
-    else:
-        return prettify(gas, add_color=add_color, parentheses=False)
+    return prettify(gas, add_color=add_color, parentheses=False)
 
 
 def try_fname(exp, add_color=False):
@@ -1831,7 +1828,11 @@ def pretty_fname(exp, add_color=False, force=False):
     if type(exp) == int:
         fname = try_fname(exp, add_color)
         if fname and "unknown_" not in fname:
-            return fname
+            if re.fullmatch(r"unknown[0-9a-f]{8}\(\)", clean_color(fname)):
+                # a function this doesn't know: nor its params
+                return fname.replace("()", "(?)")
+            # the names the database doesn't have are no names of the callee
+            return re.sub(r" _param\d+(?=[,)])", "", fname)
         else:
             return hex(exp)
 
