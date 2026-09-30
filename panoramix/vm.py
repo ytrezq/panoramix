@@ -155,10 +155,58 @@ def mask_value(value, size, offset=0, shl=0):
     return mask_op(value, size=size, offset=offset, shl=shl)
 
 
+def upper_bound(v, known):
+    """The highest value v can have, by the known conditions, None if none."""
+    res = None
+    for fact in known:
+        n = None
+        if m := match(fact, (":op", v, ":int:n")):
+            n = {"lt": m.n - 1, "le": m.n}.get(m.op)
+        elif m := match(fact, (":op", ":int:n", v)):
+            n = {"gt": m.n - 1, "ge": m.n}.get(m.op)
+        elif m := match(fact, ("iszero", (":op", v, ":int:n"))):
+            n = {"gt": m.n, "ge": m.n - 1}.get(m.op)
+        elif m := match(fact, ("iszero", (":op", ":int:n", v))):
+            n = {"lt": m.n, "le": m.n - 1}.get(m.op)
+        if n is not None and (res is None or n < res):
+            res = n
+    return res
+
+
+def write_range(known, start, size):
+    """
+    The range of memory a write of size bytes at a place computed at runtime
+    may touch: base + k * i, with i below a known bound - an element of an
+    array in memory, whose index was checked. None if it's not known.
+    """
+    if type(size) != int or opcode(start) != "add" or len(start) != 3:
+        return None
+
+    for base, offset in ((start[1], start[2]), (start[2], start[1])):
+        if type(base) != int:
+            continue
+        if m := match(offset, ("mul", ":int:k", ":i")):
+            k, i = m.k, m.i
+        elif m := match(offset, ("mask_shl", ":int:size", 0, ":int:shl", ":i")):
+            k, i = 2**m.shl, offset[4]
+        else:
+            k, i = 1, offset
+        top = upper_bound(i, known)
+        if top is not None and k > 0 and 0 <= top < 2**64:
+            return base, base + k * top + size
+
+    return None
+
+
 def write_memory(known, rng, value):
     """What's known once value is written to the memory range rng."""
     start, size = rng[1], rng[2]
     if type(start) != int or type(size) != int:
+        if bounds := write_range(known, start, size):
+            # somewhere there
+            return write_memory(
+                known, ("range", bounds[0], bounds[1] - bounds[0]), None
+            )
         # anywhere
         return tuple(fact for fact in known if opcode(fact) not in MEMORY_FACTS)
 
