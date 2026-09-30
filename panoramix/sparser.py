@@ -601,6 +601,9 @@ def _sparser(orig_storages):
             return ("map", ("data", *terms), ("loc", m.loc))
         elif m := match(e, ("sha3", ":idx", ":int:loc")):
             return ("map", m.idx, ("loc", m.loc))
+        elif (m := match(e, ("sha3", ":int:loc", ":idx"))) and type(m.idx) != int:
+            # Vyper hashes the slot, then the key
+            return ("map", m.idx, ("loc", m.loc))
         else:
             return e
 
@@ -793,6 +796,10 @@ def _sparser(orig_storages):
         if m := match(exp, ("sha3", ":idx", ("map", ...))):
             terms = exp[2][1:]
             return ("map", m.idx, ("map", *terms))
+
+        if (m := match(exp, ("sha3", ("map", ...), ":idx"))) and opcode(m.idx) != "map":
+            # Vyper hashes the slot, then the key
+            return ("map", m.idx, exp[1])
 
         if m := match(exp, ("add", ":idx", ("map", ...))):
             terms = exp[2][1:]
