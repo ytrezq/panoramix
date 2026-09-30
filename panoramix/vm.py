@@ -997,6 +997,35 @@ class VM(EasyCopy):
                     break
 
     @staticmethod
+    def below(node, p):
+        """Whether node is p, or a node of the tree below it."""
+        while node != [] and node is not p:
+            node = node.prev
+        return node is p
+
+    @staticmethod
+    def in_merged_branch(node, p):
+        """
+        Whether `node`, below the `if` node `p`, is in a branch of an `if`
+        between them whose paths were merged (see _merge_at): a path that
+        ends at `node` goes on in the continuation of that `if` (see
+        make_trace), not in what follows `p`.
+        """
+        child, a = node, node.prev
+        while a != [] and a is not p:
+            tr = a.trace
+            if (
+                tr
+                and len(tr) >= 2
+                and opcode(tr[-1]) == "jump"
+                and opcode(tr[-2]) == "if"
+                and any(child is b for b in tr[-2][2:4])
+            ):
+                return True
+            child, a = a, a.prev
+        return False
+
+    @staticmethod
     def common_ancestor(a, b):
         while a != [] and a.depth > b.depth:
             a = a.prev
@@ -1061,8 +1090,13 @@ class VM(EasyCopy):
                 n = to_visit.pop()
 
                 if n.merged:
-                    # goes on in the continuation of an `if` below `p`, which
-                    # will be visited as well
+                    # goes on in the continuation of the `if` it was merged
+                    # at, which will be visited as well - if that's below `p`.
+                    # One above it: merged here, the path would go on in what
+                    # follows `p` instead (a path that breaks out of two loops
+                    # at once)
+                    if not self.below(n.merge_point, p):
+                        return False
                     continue
 
                 if n.is_label():
@@ -1077,9 +1111,15 @@ class VM(EasyCopy):
                     # where the loop will be found again. See make_trace for
                     # the label left behind.
 
-                elif n.jd == jd:
+                elif n.jd == jd and not self.in_merged_branch(n, p):
                     hits.append(n)
                     continue
+
+                # (a node at jd in a branch of an `if` whose paths were merged
+                # already: its path goes on in the continuation of that `if`
+                # - with the variables of that merge, set further down -, not
+                # in what follows p. It's visited as any other node, and so is
+                # that continuation.)
 
                 if n.trace is None:
                     result = None
@@ -1106,6 +1146,13 @@ class VM(EasyCopy):
 
         if len(hits) < 2:
             return False
+
+        for h in hits:
+            if find_nodes(h, lambda m: m.merged and not self.below(m.merge_point, h)):
+                # the path from h was merged with others further down, at an
+                # `if` above p (one between them would have kept h from being
+                # a hit): cut at h, it wouldn't get to that merge any more
+                return False
 
         stacks = [list(h.stack) for h in hits]
         merged = list(stacks[0])
@@ -1134,6 +1181,7 @@ class VM(EasyCopy):
             h.trace = sv
             h.next = []
             h.merged = True
+            h.merge_point = p
 
         # what's known at the merge point is what's known on every path
         known = tuple(
