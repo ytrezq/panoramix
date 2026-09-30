@@ -234,6 +234,15 @@ def split_or(value):
         if m := match(row, ("mul", 1, ":val")):
             row = m.val
 
+        if row == 0 or (
+            opcode(row) == "mask_shl"
+            and type(row[2]) == int
+            and value_bits(row[4]) <= row[2]
+        ):
+            # nothing: bits of a value above its top (Mask(56, 200,
+            # uint200(x))) are 0
+            continue
+
         if opcode(row) == "mask_shl" and all_concrete(*row[1:]):
             row = apply_mask(row[4], row[1], row[2], row[3])
 
@@ -257,6 +266,11 @@ def split_or(value):
                 ret_rows.append((m.size, -m.off, ("storage", m.size, 0, m.idx)))
             else:
                 ret_rows.append((m.size, 0, row))
+            continue
+
+        if opcode(row) != "mask_shl" and value_bits(row) < 256:
+            # a truth value (x < y, iszero(x)...): its bits from the bit 0
+            ret_rows.append((value_bits(row), 0, row))
             continue
 
         if opcode(row) != "mask_shl":
@@ -596,23 +610,49 @@ def split_store(line):
             # word is set to
             return [line]
 
-        if len([part for part in splitted if part[0] > 0 and part[2] != 0]) < 2:
-            # one value: the word it makes, rather than it at its bits and
-            # zeroes around them
-            return [line]
-
-        splitted = sorted(splitted, key=lambda part: part[1])
-        res = []
-        # the word is written whole: the bits of no part are set to 0
+        splitted = sorted(
+            (part for part in splitted if part[0] > 0), key=lambda part: part[1]
+        )
         pos = 0
         for s_size, s_off, s_val in splitted:
-            if s_size <= 0:
-                continue
             if s_off < pos or s_off + s_size > 256:
                 # parts over each other (or out of the word): that's an or
                 # of them, not stores of one then the other
                 logger.warning("unusual store")
                 return [line]
+            pos = s_off + s_size
+
+        same = [
+            part for part in splitted if part[2] == ("storage", part[0], part[1], idx)
+        ]
+        values = [part for part in splitted if part[2] != 0 and part not in same]
+        if not same and len(values) < 2:
+            # one value: the word it makes, rather than it at its bits and
+            # zeroes around them (but a store that keeps some bits of the
+            # slot is one of the others)
+            return [line]
+
+        if same and len(values) == 1 and type(values[0][2]) == int:
+            # a number set in a slot, the rest of it kept: the bits the store
+            # doesn't keep, when they're together, are the field it sets (the
+            # compiler clears them with its mask) - the number says nothing
+            # of how wide it is (1 in an address)
+            free, pos = [], 0
+            for s_size, s_off, s_val in same:
+                if s_off > pos:
+                    free.append((pos, s_off))
+                pos = s_off + s_size
+            if pos < 256:
+                free.append((pos, 256))
+            v_size, v_off, v_val = values[0]
+            if len(free) == 1 and 0 <= v_val < 2**v_size:
+                lo, hi = free[0]
+                return [("store", hi - lo, lo, idx, v_val << (v_off - lo))]
+
+        res = []
+        # the word is written whole: the bits of no part are set to 0
+        pos = 0
+        for s_size, s_off, s_val in splitted:
             if s_off > pos:
                 res.append(("store", s_off - pos, pos, idx, 0))
             if s_val != (
