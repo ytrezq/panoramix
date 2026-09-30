@@ -494,6 +494,31 @@ def slice_exp(exp, left, right, width=None):
         else:
             return None
 
+    if opcode(exp) == "data" and all_concrete(left, right) and left < right:
+        # the parts of the data between left and right: a mask of it would
+        # be a mask of a value of more than a word
+        sizes = [sizeof(e) for e in exp[1:]]
+        if all(type(s) == int and s % 8 == 0 for s in sizes) and (
+            width is None or width == sum(sizes)
+        ):
+            res = []
+            pos = 0
+            for part, part_size in zip(exp[1:], sizes):
+                part_size //= 8
+                lo, hi = max(left, pos), min(right, pos + part_size)
+                if lo < hi:
+                    if (lo, hi) == (pos, pos + part_size):
+                        piece = part
+                    else:
+                        piece = slice_exp(part, lo - pos, hi - pos)
+                    if piece is None:
+                        return None
+                    res.append(piece)
+                pos += part_size
+
+            if right <= pos:
+                return res[0] if len(res) == 1 else ("data",) + tuple(res)
+
     if opcode(exp) == "bytes":
         if width is None:
             width = bits(exp[1])

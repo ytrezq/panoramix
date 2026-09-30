@@ -1661,6 +1661,10 @@ def pretty_bytes(size, val, add_color=False, parentheses=False):
 
 
 def pretty_fname(exp, add_color=False, force=False):
+    if m := match(exp, ("bytes", 4, ":int:val")):
+        # the 4 bytes of a function hash
+        exp = m.val
+
     if type(exp) == int:
         fname = try_fname(exp, add_color)
         if fname and "unknown_" not in fname:
