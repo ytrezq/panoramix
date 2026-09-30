@@ -1092,8 +1092,12 @@ def apply_mask_to_storage(exp, size, offset, shl):
     shl = add_op(shl, offset)
     offset = 0
 
-    if safe_lt_op(size, stor_size):
+    if safe_le_op(size, stor_size) is True:
         stor_size = size
+    elif safe_le_op(stor_size, size) is not True:
+        # which one is narrower isn't known (e.g. uint8 of a field of
+        # 256 - 8 * i bits): the mask has to stay
+        return None
 
     if safe_le_op(stor_size, 0) is True:
         return 0
