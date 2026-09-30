@@ -78,18 +78,6 @@ VARYING_READS = (
 )
 
 
-def always_reverts(trace):
-    """True if every path through the trace reverts."""
-    if not trace:
-        return False
-
-    last = trace[-1]
-    if opcode(last) == "if":
-        return always_reverts(last[2]) and always_reverts(last[3])
-
-    return opcode(last) in ("revert", "invalid")
-
-
 def varies(exp):
     """True if exp reads something that isn't a constant of the contract."""
     if type(exp) is str:
@@ -119,6 +107,8 @@ class Function(EasyCopy):
         self.const = None
         self.read_only = None
         self.payable = None
+        # what the function does when it's sent ether, if it isn't payable
+        self.value_fails = None
 
         self.hash = hash
 
@@ -430,6 +420,7 @@ class Function(EasyCopy):
             "getter": self.getter,
             "const": self.const,
             "payable": self.payable,
+            "value_fails": self.value_fails,
             "print": self.print(),
             "trace": trace,
             "params": self.inferred_params,
@@ -471,13 +462,17 @@ class Function(EasyCopy):
             comment = ""
 
             if not self.payable:
+                # sent ether, it reverts with no data - or, the check of old
+                # compilers, it runs an invalid opcode (see OUTPUT.md)
                 comment = "# not payable"
+                if self.value_fails == "invalid":
+                    comment += " (invalid)"
 
             if self.name == "_fallback(?)":
                 if self.payable:
                     comment = "# default function"
                 else:
-                    comment = "# not payable, default function"  # qweqw
+                    comment += ", default function"
 
             header = [
                 color("def ", C.header)
@@ -522,23 +517,23 @@ class Function(EasyCopy):
             k += 1
         first = self.trace[k]
 
-        if (
-            opcode(first) == "if"
-            and simplify_bool(first[1]) == "callvalue"
-            and (first[2][0] == ("revert", None) or opcode(first[2][0]) == "invalid")
+        # a function is printed as payable unless the check is there: its
+        # body is what it does whatever ether it's sent (one that always
+        # reverts does it with the ether too - with the data it reverts with)
+        self.payable = True
+        if opcode(first) == "if" and simplify_bool(first[1]) in (
+            "callvalue",
+            ("iszero", "callvalue"),
         ):
-            self.trace = self.trace[:k] + first[3]
-            self.payable = False
-        elif (
-            opcode(first) == "if"
-            and simplify_bool(first[1]) == ("iszero", "callvalue")
-            and (first[3][0] == ("revert", None) or opcode(first[3][0]) == "invalid")
-        ):
-            self.trace = self.trace[:k] + first[2]
-            self.payable = False
-        else:
-            # a function that always reverts doesn't take any ether either
-            self.payable = not always_reverts(self.trace)
+            fails, rest = first[2], first[3]
+            if simplify_bool(first[1]) != "callvalue":
+                fails, rest = rest, fails
+            if fails and (
+                fails[0] == ("revert", None) or opcode(fails[0]) == "invalid"
+            ):
+                self.trace = self.trace[:k] + rest
+                self.payable = False
+                self.value_fails = opcode(fails[0])
 
         exp_text.append(("payable", self.payable))
 
@@ -561,7 +556,11 @@ class Function(EasyCopy):
         """
 
         self.const = (
-            self.read_only and len(self.returns) == 1 and not varies(self.trace)
+            self.read_only
+            and len(self.returns) == 1
+            and not varies(self.trace)
+            # (sent ether, a const reverts with no data: see OUTPUT.md)
+            and self.value_fails == "revert"
         )
 
         if self.const:

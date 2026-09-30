@@ -70,8 +70,12 @@ how wide it is:
 
 ## Functions and params
 
+- `def f(...) payable:` runs its body whatever ether it's sent (`call.value`).
+  `def f(...): # not payable` reverts with no data when it's sent any,
+  before anything else - `# not payable (invalid)`: runs an invalid opcode
+  then (the check of old compilers).
 - `const name = ...`: the function `name()` returns that data (read as a
-  `return`'s), whatever it's called with.
+  `return`'s), whatever it's called with - it's not payable.
 - A param (`_param1`, or its name) is the word of calldata at its place: its
   type in the signature doesn't clean it. Where it's used cleaned, it's after
   the function checks it (`require _param1 == address(_param1)`), which
