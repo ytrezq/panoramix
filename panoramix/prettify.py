@@ -1126,6 +1126,70 @@ def num_precedence(text):
     return ATOM
 
 
+# the names of the variables of loops ('i','j','k','l','m','n','o','p','q','r'
+# aren't: they read as indexes), the ones the text doesn't have for something
+# else (see set_names)
+NICE_NAMES = (
+    "idx",
+    "s",
+    "t",
+    "u",
+    "v",
+    "w",
+    "x",
+    "y",
+    "z",
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f",
+    "g",
+    "h",
+)
+
+# the names the text has for what the EVM gives, and the first names of the
+# ones it has with a dot (call.value, block.number...): no param nor variable
+# has one of them
+BUILTIN_NAMES = frozenset(
+    (
+        "caller",
+        "chainid",
+        "gas_remaining",
+        "call",
+        "calldata",
+        "this",
+        "tx",
+        "block",
+        "return_data",
+        "ext_call",
+        "ext_code",
+        "memcopy",
+        "delegate",
+        "create",
+        "create2",
+        "code",
+        "eth",
+        "mem",
+        "stor",
+    )
+)
+
+_names = {"storage": frozenset(), "taken": BUILTIN_NAMES}
+
+
+def set_names(storage=None, params=None):
+    """
+    The names of the storage variables (of the contract), and of the params
+    (of the function printed): the variables of its loops have others - `s =
+    ...` would be a write to the storage variable s, and `x` a param x.
+    """
+    if storage is not None:
+        _names["storage"] = frozenset(storage)
+    _names["taken"] = BUILTIN_NAMES | _names["storage"] | frozenset(params or ())
+
+
 def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=False):
     col = partial(colorize, add_color=add_color)
     pret = partial(prettify, add_color=add_color, parentheses=False)
@@ -1396,29 +1460,14 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
             return parsed_exp
 
     if m := match(exp, ("var", ":int:idx")):
-        nice_names = [
-            "idx",
-            "s",
-            "t",
-            "u",
-            "v",
-            "w",
-            "x",
-            "y",
-            "z",
-            "a",
-            "b",
-            "c",
-            "d",
-            "e",
-            "f",
-            "g",
-            "h",
-        ]  # 'i','j','k','l','m','n','o','p','q','r',
-        if m.idx < len(nice_names):
-            name = nice_names[m.idx]
+        # (not a name the text has for something else, see set_names)
+        free = [n for n in NICE_NAMES if n not in _names["taken"]]
+        if m.idx < len(free):
+            name = free[m.idx]
         else:
             name = "var" + str(m.idx)
+            while name in _names["taken"]:
+                name += "_"
 
         return col(name, COLOR_BLUE)
 

@@ -8,6 +8,7 @@ from panoramix.prettify import (
     pprint_ast,
     pprint_trace,
     pretty_stor,
+    set_names,
 )
 from panoramix.utils.helpers import (
     COLOR_GREEN,
@@ -94,7 +95,12 @@ class Contract:
             # the accesses as the slots they are
             storage.rewrite_raw(self.functions)
 
+        # (not the names of variables nor of params, see prettify.set_names)
+        storage_names = [d[1] for d in self.stor_defs]
+        set_names(storage=storage_names)
+
         for func in self.functions:
+            func.rename_params(storage_names)
 
             def replace_names(exp):
                 if (

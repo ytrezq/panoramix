@@ -1,13 +1,21 @@
 import collections
 import json
 import logging
+import re
 from copy import deepcopy
 
 from panoramix.core.arithmetic import simplify_bool
 from panoramix.core.masks import mask_to_type
 from panoramix.core.memloc import byte_elements, keep_width
 from panoramix.matcher import Any, match
-from panoramix.prettify import explain_text, pprint_logic, prettify, pretty_memory
+from panoramix.prettify import (
+    BUILTIN_NAMES,
+    explain_text,
+    pprint_logic,
+    prettify,
+    pretty_memory,
+    set_names,
+)
 from panoramix.utils.helpers import (
     COLOR_BLUE,
     COLOR_BOLD,
@@ -32,6 +40,7 @@ from panoramix.utils.signatures import (
     get_func_name,
     get_func_params,
     set_func,
+    set_func_params,
     set_func_params_if_none,
 )
 
@@ -221,6 +230,43 @@ class Function(EasyCopy):
             return res
 
         return rem(trace, {})
+
+    def rename_params(self, storage_names):
+        """
+        The params (of the abi) that have the name of a storage variable
+        (`owner`, which would read as both), or of something the EVM gives
+        (`caller`), have it after a _ (`_owner`).
+        """
+        inputs = get_func_params(self.hash)
+        if not inputs:
+            return
+        taken = BUILTIN_NAMES | frozenset(storage_names)
+        names = {p["name"] for p in inputs}
+        renames = {}
+        for p in inputs:
+            if p["name"] in taken:
+                new = "_" + p["name"]
+                while new in taken or new in names:
+                    new = "_" + new
+                renames[p["name"]] = new
+                names.add(new)
+        if not renames:
+            return
+
+        set_func_params(
+            self.hash, [dict(p, name=renames.get(p["name"], p["name"])) for p in inputs]
+        )
+
+        def renamed(name):
+            # (desc of desc.srcToken, amounts of amounts[2])
+            base = re.match(r"\w*", name).group(0)
+            return renames[base] + name[len(base) :] if base in renames else name
+
+        self.inferred_params = {
+            k: (t, renamed(n)) for k, (t, n) in self.inferred_params.items()
+        }
+        self.name = get_func_name(self.hash)
+        self.color_name = get_func_name(self.hash, add_color=True)
 
     def make_names(self):
         new_name = self.name.split("(")[0]
@@ -440,6 +486,12 @@ class Function(EasyCopy):
     def _print(self):
         set_func(self.hash)
         set_func_params_if_none(self.inferred_params)
+        # (desc of desc.srcToken, amounts of amounts[2])
+        set_names(
+            params=[
+                re.match(r"\w*", p[1]).group(0) for p in self.inferred_params.values()
+            ]
+        )
 
         if self.const is not None:
             val = self.const

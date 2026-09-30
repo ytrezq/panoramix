@@ -54,7 +54,8 @@ comparisons, `|`, `^`, `&`, `<< >>`, `+ -`, `* / %`, unary `-`, `**`.
 - `while cond:` loops while `cond` holds; the end of its body goes back to
   `cond`. `continue` and `break` are about the innermost loop, or the one they
   name: `loop2: while ...` ... `continue loop2`.
-- `x = ...` for a name that isn't a storage variable is a local variable.
+- `x = ...` for a name that isn't a storage variable is a local variable (a
+  local variable has no name of a storage variable or of a param).
 - `mem[a]` is the word of memory at `a`, `mem[a len n]` its `n` bytes at `a`;
   `mem[a len n] = v` with `v` a number writes its low `n` bytes (zeroes
   above its word), with a list of data (`mem[a] = Bytes(12, 0), mem[b len

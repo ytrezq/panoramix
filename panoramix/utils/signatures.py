@@ -200,6 +200,11 @@ def get_func_params(hash) -> Optional[List]:
     return a.get("inputs")
 
 
+def set_func_params(hash, inputs):
+    """The params of the function (of the abi): their names, say."""
+    _abi[hash]["inputs"] = inputs
+
+
 def get_func_name(hash, add_color=False):
     a = _abi[hash]
     logger.debug("get_func_name for abi %s", a)
