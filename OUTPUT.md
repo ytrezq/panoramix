@@ -95,14 +95,21 @@ how wide it is:
 - `call.func_hash` is the selector; `calldata.size` the size of the calldata.
 - A struct in a signature is the types it's made of, `(uint8,bytes32,bytes32)
   sig`: the selector is the hash of the signature with them.
-- An external call prints its gas as the expression it is, its selector as
-  the function it calls when that's known (`unknown1234abcd(?)` when it isn't:
-  no params are made up), and then its params as a list of data. The address
+- An external call is `call x.f(...) with:` (CALL), `static call` (STATICCALL),
+  `delegate` (DELEGATECALL) or `codecall` (CALLCODE), then `value v wei` (none:
+  0), `gas g` and `args ...`: its data is the 4 bytes of its selector, then
+  its params as a list of data. The selector is printed as the function it
+  calls when that's known, `unknown1234abcd(?)` when it isn't (no params are
+  made up), `mem[a len 4]` when it's those bytes of memory, or on a line of
+  its own, `funct x` (the low 4 bytes of `x`). `call x with:` has no
+  selector: `args` is all of its data, when it may have fewer than 4 bytes
+  (`x.call(data)` with a param `data`, say) - no `args`: no data. The address
   called (`x` in `call x.f(...)`, `eth.balance(x)`...) is the low 160 bits
   of `x`, as for the EVM.
-  `ext_call.success` is its result, `ext_call.return_data[a len n]` what it
-  returned (zeroes past it), `return_data.size` how much. What a call writes
-  to memory is said after it: `mem[a len min(32, return_data.size)] =
+  `ext_call.success` is its result (`delegate.return_code`,
+  `callcode.return_code` for the others), `ext_call.return_data[a len n]`
+  what it returned (zeroes past it), `return_data.size` how much. What a call
+  writes to memory is said after it: `mem[a len min(32, return_data.size)] =
   ext_call.return_data[0 len min(32, return_data.size)]`, the rest of the 32
   bytes it gave for it left as it was.
 - `x = ecrecover(...) # precompiled` calls a precompiled contract

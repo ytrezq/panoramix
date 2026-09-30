@@ -18,6 +18,7 @@ from panoramix.core.algebra import (
     shr_op,
     sub_op,
     to_bytes,
+    value_range,
     CannotCompare,
 )
 from panoramix.core.arithmetic import (
@@ -1763,19 +1764,7 @@ class VM(EasyCopy):
                 addr,
             )  # arg_start, arg_len, ret_start, ret_len)
 
-            if arg_len == 0:
-                fname = None
-                fparams = None
-
-            elif arg_len == 4:
-                fname = mem_load(arg_start, 4)
-                fparams = None
-
-            else:
-                fname = mem_load(arg_start, 4)
-                fparams = mem_load(add_op(arg_start, 4), sub_op(arg_len, 4))
-
-            call_trace += (fname, fparams)
+            call_trace += self.call_data(arg_start, arg_len)
 
             trace(call_trace)
 
@@ -1783,7 +1772,7 @@ class VM(EasyCopy):
             stack.append("delegate.return_code")
 
             self.output_write(
-                trace, lambda n: ("delegate.return_data", 0, n), ret_start, ret_len
+                trace, lambda n: ("ext_call.return_data", 0, n), ret_start, ret_len
             )
 
         elif op == "callcode":
@@ -1803,19 +1792,7 @@ class VM(EasyCopy):
                 value,
             )
 
-            if arg_len == 0:
-                fname = None
-                fparams = None
-
-            elif arg_len == 4:
-                fname = mem_load(arg_start, 4)
-                fparams = None
-
-            else:
-                fname = mem_load(arg_start, 4)
-                fparams = mem_load(add_op(arg_start, 4), sub_op(arg_len, 4))
-
-            call_trace += (fname, fparams)
+            call_trace += self.call_data(arg_start, arg_len)
 
             trace(call_trace)
 
@@ -1823,7 +1800,7 @@ class VM(EasyCopy):
             stack.append("callcode.return_code")
 
             self.output_write(
-                trace, lambda n: ("callcode.return_data", 0, n), ret_start, ret_len
+                trace, lambda n: ("ext_call.return_data", 0, n), ret_start, ret_len
             )
 
         elif op == "create":
@@ -1952,6 +1929,30 @@ class VM(EasyCopy):
         size = ("min", ret_len, "returndatasize")
         trace(("setmem", ("range", ret_start, size), data(size)))
 
+    def call_data(self, arg_start, arg_len):
+        """
+        (selector, params): the data of a call, the arg_len bytes of memory at
+        arg_start - its 4 first bytes and the others, where it has 4 bytes or
+        more for sure; else (None, all of them): the data of a param (a
+        `x.call(data)`) can be shorter, and then it has no selector. (None,
+        None): no data.
+        """
+        if arg_len == 0:
+            return None, None
+        if arg_len == 4:
+            return mem_load(arg_start, 4), None
+        if type(arg_len) is int:
+            split = arg_len > 4
+        else:
+            # (as the word it is: a sum that can't wrap)
+            lo, hi = value_range(arg_len, known_bounds(self.known))
+            split = lo >= 4 and hi < 2**256
+        if split:
+            return mem_load(arg_start, 4), mem_load(
+                add_op(arg_start, 4), sub_op(arg_len, 4)
+            )
+        return None, mem_load(arg_start, arg_len)
+
     def handle_call(self, op, trace):
         stack = self.stack
 
@@ -2024,16 +2025,7 @@ class VM(EasyCopy):
                 wei,
             )
 
-            if arg_len == 0:
-                call_trace += None, None
-
-            elif arg_len == 4:
-                call_trace += mem_load(arg_start, 4), None
-
-            else:
-                fname = mem_load(arg_start, 4)
-                fparams = mem_load(add_op(arg_start, 4), sub_op(arg_len, 4))
-                call_trace += fname, fparams
+            call_trace += self.call_data(arg_start, arg_len)
 
             trace(call_trace)
             #           trace(('comment', mem_load(arg_start, arg_len)))

@@ -574,7 +574,8 @@ def pretty_line(r, add_color=True):
 
     elif m := match(r, ("callcode", ":gas", ":addr", ":wei", ":fname", ":fparams")):
         gas, addr, wei, fname, fparams = m.gas, m.addr, m.wei, m.fname, m.fparams
-        fname = pretty_fname(fname, add_color=add_color)
+        fname, fparams = split_selector(fname, fparams)
+        name = callee_name(fname, add_color=add_color)
 
         if type(addr) == int:
             addr = hex(addr)
@@ -582,30 +583,26 @@ def pretty_line(r, add_color=True):
         gas = prettify(gas, parentheses=False, add_color=add_color)
         fparams = pretty_memory(fparams, add_color=add_color)
 
-        if fname is not None:
-            if type(fname) == str:
-                fname = pretty_fname(fname, add_color=add_color)
-                yield f"{COLOR_WARNING}codecall{ENDC} {addr}.{fname} with:"
-
-            else:
-                yield f"{COLOR_WARNING}codecall{ENDC} {addr} with:"
-                yield "   funct " + prettify(fname, add_color=add_color)
-
+        if name is not None:
+            yield f"{COLOR_WARNING}codecall{ENDC} {addr}.{name} with:"
         else:
             yield f"{COLOR_WARNING}codecall{ENDC} {addr} with:"
+            if fname is not None:
+                yield "   funct " + prettify(fname, add_color=add_color)
 
         if wei != 0:
             wei = prettify(wei, parentheses=False, add_color=add_color)
             yield f"   value {wei} {COLOR_GRAY}wei{ENDC}"
 
-        yield f"     gas {gas} {COLOR_GRAY}wei{ENDC}"
+        yield f"     gas {gas}"
 
         if fparams is not None:
             yield "    args {}".format(", ".join(fparams))
 
     elif m := match(r, ("delegatecall", ":gas", ":addr", ":fname", ":fparams")):
         gas, addr, fname, fparams = m.gas, m.addr, m.fname, m.fparams
-        fname = pretty_fname(fname, add_color=add_color)
+        fname, fparams = split_selector(fname, fparams)
+        name = callee_name(fname, add_color=add_color)
 
         if type(addr) == int:
             addr = hex(addr)
@@ -613,19 +610,14 @@ def pretty_line(r, add_color=True):
         gas = prettify(gas, parentheses=False, add_color=add_color)
         fparams = pretty_memory(fparams, add_color=add_color)
 
-        if fname is not None:
-            if type(fname) == str:
-                fname = pretty_fname(fname, add_color=add_color)
-                yield f"{COLOR_WARNING}delegate{ENDC} {addr}.{fname} with:"
-
-            else:
-                yield f"{COLOR_WARNING}delegate{ENDC} {addr} with:"
-                yield "   funct " + prettify(fname, add_color=add_color)
-
+        if name is not None:
+            yield f"{COLOR_WARNING}delegate{ENDC} {addr}.{name} with:"
         else:
             yield f"{COLOR_WARNING}delegate{ENDC} {addr} with:"
+            if fname is not None:
+                yield "   funct " + prettify(fname, add_color=add_color)
 
-        yield f"     gas {gas} {COLOR_GRAY}wei{ENDC}"
+        yield f"     gas {gas}"
 
         if fparams is not None:
             yield "    args {}".format(", ".join(fparams))
@@ -655,6 +647,7 @@ def pretty_line(r, add_color=True):
 
     elif m := match(r, ("call", ":gas", ":addr", ":wei", ":fname", ":fparams")):
         gas, addr, wei, fname, fparams = m.gas, m.addr, m.wei, m.fname, m.fparams
+        fname, fparams = split_selector(fname, fparams)
 
         if type(addr) == int:
             if len(hex(addr)) > 22 + 2:
@@ -665,27 +658,19 @@ def pretty_line(r, add_color=True):
         addr = pret(addr)
         gas = pretty_gas(gas, wei, add_color)
 
-        if fname is None:
-            yield f"call {addr} with:"
-
+        name = callee_name(fname, add_color=add_color)
+        if name is not None:
+            yield f"call {addr}.{name} with:"
         else:
-            fname = pretty_fname(fname, add_color=add_color)
-
-            if fname == "0x0":
-                yield f"call {addr} with:"
-
-            elif type(fname) == str:
-                yield f"call {addr}.{pret(fname)} with:"
-
-            else:
-                yield f"call {addr} with:"
+            yield f"call {addr} with:"
+            if fname is not None:
                 yield f"   funct {pret(fname)}"
 
         if wei != 0:
             wei = prettify(wei, parentheses=False, add_color=add_color)
             yield f"   value {wei} {COLOR_GRAY}wei{ENDC}"
 
-        yield f"     gas {gas} {COLOR_GRAY}wei{ENDC}"
+        yield f"     gas {gas}"
 
         if fparams is not None:
             fparams = pretty_memory(fparams, add_color=add_color)
@@ -693,27 +678,22 @@ def pretty_line(r, add_color=True):
 
     elif m := match(r, ("staticcall", ":gas", ":addr", ":wei", ":fname", ":fparams")):
         gas, addr, wei, fname, fparams = m.gas, m.addr, m.wei, m.fname, m.fparams
+        fname, fparams = split_selector(fname, fparams)
         if type(addr) == int:
             addr = hex(addr)
 
         addr = prettify(addr, add_color=add_color, parentheses=False)
         gas = pretty_gas(gas, wei, add_color)
 
-        if fname is not None:
-            fname = pretty_fname(fname, add_color=add_color)
-
-            if fname == "0x0":
-                yield f"static call {addr} with:"
-            elif type(fname) == str and fname != "0x0":
-                yield f"static call {addr}.{pret(fname)} with:"
-            else:
-                yield f"static call {addr} with:"
-                yield f"     funct {pret(fname)}"
-
+        name = callee_name(fname, add_color=add_color)
+        if name is not None:
+            yield f"static call {addr}.{name} with:"
         else:
             yield f"static call {addr} with:"
+            if fname is not None:
+                yield f"     funct {pret(fname)}"
 
-        yield f"        gas {gas} {COLOR_GRAY}wei{ENDC}"
+        yield f"        gas {gas}"
 
         if fparams is not None:
             fparams = pretty_memory(fparams, add_color=add_color)
@@ -1873,25 +1853,6 @@ def pretty_gas(gas, value, add_color):
     return prettify(gas, add_color=add_color, parentheses=False)
 
 
-def try_fname(exp, add_color=False):
-    if Loader.find_sig(hex(exp)[:10]):
-        return Loader.find_sig(hex(exp)[:10], add_color)
-
-    elif len(hex(exp)) >= 63 and Loader.find_sig(
-        padded_hex(exp, 64)[:10], add_color
-    ):  # in Loader.signatures: # if three last letters are "0"s, but no more, so there is
-        # a low chance for mistaking a random number for function sig
-        return Loader.find_sig(padded_hex(exp, 64)[:10], add_color)
-
-    elif len(hex(exp)) >= 8 and Loader.find_sig(
-        padded_hex(exp, 8)[:10], add_color
-    ):  # in Loader.signatures:
-        return Loader.find_sig(padded_hex(exp, 8)[:10], add_color)
-
-    else:
-        return None
-
-
 def event_abi(topic):
     """The abi of the event whose signature is topic, if it's known."""
     if type(topic) != int:
@@ -1971,26 +1932,51 @@ def sequential_setvars(setvars):
     return res
 
 
-def pretty_fname(exp, add_color=False, force=False):
-    if m := match(exp, ("bytes", 4, ":int:val")):
-        # the 4 bytes of a function hash
-        exp = m.val
+def known_fname(sel, add_color=False):
+    """
+    The function (or error...) of the selector sel, a number of 4 bytes, as
+    it's printed - when the database knows it, else None.
+    """
+    # (a selector of zero bytes first is 0x00fdd58e, not 0xfdd58e)
+    name = Loader.find_sig("0x%08x" % sel, add_color)
+    if name is None or re.match(r"unknown_?([0-9a-f]{8})?\(", clean_color(name)):
+        # (a name of the database that's no name: nor are its params)
+        return None
+    # the names the database doesn't have are no names of the callee
+    return re.sub(r" _param\d+(?=[,)])", "", name)
 
-    if type(exp) == int:
-        fname = try_fname(exp, add_color)
-        if fname and "unknown_" not in fname:
-            if re.fullmatch(r"unknown[0-9a-f]{8}\(\)", clean_color(fname)):
-                # a function this doesn't know: nor its params
-                return fname.replace("()", "(?)")
-            # the names the database doesn't have are no names of the callee
-            return re.sub(r" _param\d+(?=[,)])", "", fname)
-        else:
-            return hex(exp)
 
-    elif opcode(exp) == "mem" or force:
-        return prettify(exp, add_color=add_color)
+def split_selector(fname, fparams):
+    """
+    The selector and the params of a call (see vm.VM.call_data): a call
+    whose data is all in its params, when they start with 4 bytes that are a
+    number, has them for selector and the rest for params.
+    """
+    if fname is not None:
+        return fname, fparams
+    if match(fparams, ("bytes", 4, ":int:")):
+        return fparams, None
+    if opcode(fparams) == "data" and match(fparams[1:2], ((("bytes", 4, ":int:")),)):
+        rest = fparams[2:]
+        return fparams[1], ("data",) + rest if len(rest) > 1 else (rest or (None,))[0]
+    return fname, fparams
 
-    return exp
+
+def callee_name(fname, add_color=False):
+    """
+    What a call calls, printed after its address (`x.f(...)`): the function
+    of its selector when that's known, `unknown1234abcd(?)` when it isn't (no
+    params made up), the bytes of memory it is (`x.mem[a len 4]`) - None when
+    it's none of these (a selector computed: printed as `funct ...`), or when
+    the call has no data.
+    """
+    if m := match(fname, ("bytes", 4, ":int:val")):
+        fname = m.val
+    if type(fname) == int and 0 <= fname < 2**32:
+        return known_fname(fname, add_color) or f"unknown{fname:08x}(?)"
+    if opcode(fname) == "mem":
+        return prettify(fname, add_color=add_color)
+    return None
 
 
 # the characters of a text: the printable ones and the whitespace
@@ -2083,8 +2069,10 @@ def pretty_memory(exp, add_color=False, abi_text=False):
 
     while idx < len(exp):
         if idx == 0 and (m := match(exp[0], ("bytes", 4, ":int:selector"))):
-            # a selector: of an error, of an event...
-            res.append(pretty_fname(m.selector, add_color))
+            # a selector: of an error, of an event... - its 8 digits when it's
+            # not known (a word that small is printed in decimal)
+            sel = m.selector % 2**32
+            res.append(known_fname(sel, add_color) or f"{sel:#010x}")
             idx += 1
             continue
 

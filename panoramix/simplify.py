@@ -2046,10 +2046,13 @@ def cleanup_mems(trace, used_after=None):
         if match(line, ("setmem", ":rng", ("mem", ":rng"))):
             continue
 
-        if opcode(line) in ["call", "staticcall", "delegatecall", "codecall"]:
+        if opcode(line) in ["call", "staticcall", "delegatecall", "callcode"]:
             fname, fdata = line[-2:]
 
-            if match(fdata, ("mem", ("range", Any, -4))):
+            if match(fdata, ("mem", ("range", Any, -4))) or (
+                fname is None and match(fdata, ("mem", ("range", Any, 0)))
+            ):
+                # (no data)
                 line = line[:-2] + (None, None)
 
             res.append(line)
