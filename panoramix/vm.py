@@ -165,6 +165,10 @@ MAX_CODECOPY_SIZE = 1024
 
 MEMORY_FACTS = ("memory", "memory_fresh")
 
+# known while no call was made: no data was returned (forgotten with what
+# mentions returndatasize, at a call and at the head of a loop)
+RETURNDATASIZE_ZERO = ("returndatasize_zero",)
+
 
 def mask_value(value, size, offset=0, shl=0):
     """mask_op, that also computes a number, and leaves a word as it is."""
@@ -752,6 +756,10 @@ class VM(EasyCopy):
             if start == 0 and len(entry) == 0:
                 known += (("memory_fresh",),)
             known += tuple(f for f in memory if f not in known)
+            # no call was made yet (the dispatcher makes none): no data was
+            # returned - until one is, see forget (minimal proxies use
+            # returndatasize as a cheap 0)
+            known += (RETURNDATASIZE_ZERO,)
 
         func_node = Node(
             vm=self, start=start, safe=True, stack=list(stack), known=tuple(known)
@@ -1925,10 +1933,11 @@ class VM(EasyCopy):
 
             # a copy of more than there is halts, as an invalid opcode does
             end = add_op(ret_pos, data_len)
-            beyond = ("lt", "returndatasize", end)
+            size = 0 if RETURNDATASIZE_ZERO in self.known else "returndatasize"
+            beyond = ("lt", size, end)
             try:
                 # (sizes: far from 2**256)
-                decided = lt_op("returndatasize", end)
+                decided = lt_op(size, end)
             except CannotCompare:
                 decided = is_known(beyond, self.known)
             if decided is None:
@@ -2065,7 +2074,10 @@ class VM(EasyCopy):
             "basefee",
             "blobbasefee",
         ]:
-            stack.append(op)
+            if op == "returndatasize" and RETURNDATASIZE_ZERO in self.known:
+                stack.append(0)
+            else:
+                stack.append(op)
 
         else:
             # TODO: Maybe raise an error directly?
