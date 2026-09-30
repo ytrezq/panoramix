@@ -1,6 +1,12 @@
 import logging
 
-from panoramix.core.algebra import divisible_bytes, minus_op, safe_le_op, to_bytes
+from panoramix.core.algebra import (
+    divisible_bytes,
+    mask_op,
+    minus_op,
+    safe_le_op,
+    to_bytes,
+)
 from panoramix.core.masks import mask_to_type
 from panoramix.core.memloc import sizeof
 from panoramix.matcher import Any, match
@@ -464,10 +470,33 @@ def stor_replace_f(storages, f):
     return res
 
 
+def packed_base(idx, o_size, arr_idx):
+    """
+    The base of the slot idx of the element arr_idx of a packed array, with
+    2**o_size elements in a slot - the slot of a fixed array, where the data
+    of a dynamic one starts - or None if idx isn't base + arr_idx / 2**o_size.
+    """
+    slot = ("mask_shl", 256 - o_size, o_size, -o_size, arr_idx)
+    if idx == slot:
+        return 0
+
+    if opcode(idx) == "add" and len(idx) == 3 and slot in idx[1:]:
+        return idx[2] if idx[1] == slot else idx[1]
+
+    return None
+
+
 def _sparser(orig_storages):
     storages = []
     for s in orig_storages:
         storages.append(("stor",) + s[1:])
+
+    # the slots that are the first of a fixed array (whose elements are at
+    # the slot plus their index), with the sizes of their elements, and the
+    # ones that are the length of a dynamic array (whose elements are at the
+    # hash of the slot plus their index)
+    fixed_bases = {}
+    dynamic_bases = set()
 
     def simplify_sha3(e):
         e = rainbow_sha3(e)
@@ -498,37 +527,45 @@ def _sparser(orig_storages):
     res = []
     for s in storages:
         if (
-            m := match(
-                s,
-                (
-                    "stor",
-                    ":size",
-                    ("mask_shl", ":o_size", ":o_off", ":o_shl", ":arr_idx"),
-                    ":idx",
-                ),
+            (
+                m := match(
+                    s,
+                    (
+                        "stor",
+                        ":size",
+                        ("mask_shl", ":int:o_size", 0, ":o_shl", ":arr_idx"),
+                        ":idx",
+                    ),
+                )
             )
-        ) and m.size == 2**m.o_shl:
-            size, o_size, o_off, o_shl, arr_idx, idx = (
-                m.size,
-                m.o_size,
-                m.o_off,
-                m.o_shl,
-                m.arr_idx,
-                m.idx,
-            )
-            # new_osize = minus_op(o_size)
-            if m := match(idx, ("add", ":int:num", Any)):
-                idx = m.num
-            s = (
-                "stor",
-                size,
-                0,
-                (
-                    "array",
-                    ("mask_shl", o_size + o_shl, o_off, 0, arr_idx),
-                    ("loc", idx),
-                ),
-            )
+            and m.size == 2**m.o_shl
+            and m.size * 2**m.o_size <= 256
+        ):
+            # an element of a packed array: the element k is at the offset
+            # size * (k % per_slot) of the slot base + k / per_slot
+            size, o_size, arr_idx, idx = m.size, m.o_size, m.arr_idx, m.idx
+            base = None
+            if size * 2**o_size == 256:
+                base = packed_base(idx, o_size, arr_idx)
+
+            if base is not None:
+                k = arr_idx
+            else:
+                # one of the first elements, in the slot idx
+                base, k = idx, mask_op(arr_idx, size=o_size)
+
+            if type(base) == int:
+                fixed_bases.setdefault(base, set()).add(size)
+                s = ("stor", size, 0, ("array", k, ("loc", base)))
+            elif opcode(base) == "loc":
+                # the hash of the slot: a dynamic array
+                s = ("stor", size, 0, ("array", k, base))
+            elif match(base, ("array", 0, Any)):
+                # the first slot of the data of a dynamic array
+                s = ("stor", size, 0, ("array", k, base[2]))
+            elif opcode(base) == "sha3" and len(base) == 2:
+                # the hash of the slot of a value of a mapping: a dynamic array
+                s = ("stor", size, 0, ("array", k, base[1]))
 
         res.append(s)
 
