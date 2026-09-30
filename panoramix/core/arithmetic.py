@@ -350,8 +350,11 @@ def eval_bool(exp, known_true=True, symbolic=True):
         #'ge', 'gt', 'eq' - tbd
     if opcode(exp) in ["le", "lt"] and opcode(exp) == opcode(known_true):
         if exp[1] == known_true[1]:
-            # ('le', x, sth) while ('le', x, sth2) is known to be true
-            if eval_bool((opcode(exp), known_true[2], exp[2])) is True:
+            # ('le', x, sth) while ('le', x, sth2) is known to be true: when
+            # sth2 <= sth, as the words they are (x < a + 1 is no x < a + 2
+            # where a + 2 wraps to 0)
+            a, b = known_true[2], exp[2]
+            if algebra.is_word(a) and algebra.is_word(b) and algebra.proven_le(a, b):
                 return True
 
     if not symbolic:

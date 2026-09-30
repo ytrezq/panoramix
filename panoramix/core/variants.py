@@ -82,11 +82,9 @@ def possibilities(var):
 
             if current == ("mem", ("range", 64, 32)):
                 yield {current: 96}
-            elif current == "calldatasize":
-                yield {
-                    current: 6
-                }  # nasty hack for `sweeper` contract, try to remove and see what happens
-            else:  # can theoretically cause bugs in other ones
+            else:
+                # (calldatasize too: a call has 0 to 3 bytes of data, the
+                # sweeper contract's fallback say)
                 yield {current: 0}
 
         else:
@@ -98,8 +96,6 @@ def possibilities(var):
 
                 if current == ("mem", ("range", 64, 32)):
                     p[current] = 96
-                elif current == "calldatasize":
-                    p[current] = 6
                 else:
                     p[current] = 0
                 yield p
