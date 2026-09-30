@@ -11,7 +11,6 @@ from panoramix.utils.helpers import (
     ENDC,
     EasyCopy,
     colorize,
-    find_f,
     find_f_list,
     opcode,
     padded_hex,
@@ -301,24 +300,35 @@ class Loader(EasyCopy):
 
             self.fallback_known = tuple(find_f_list(trace, selector_checks))
 
-            # find default
+            # find default: where the dispatcher goes when no function
+            # matches - a branch of its ifs without a function - if it's
+            # always the same place. It isn't if there's a receive function
+            # for no calldata, or if the dispatcher reverts in some cases
+            # itself: the default function is then all of the dispatcher.
 
-            def find_default(exp):
-                # (where it starts, the stack it starts with)
-                if (m := match(exp, ("if", ":cond", ":if_true", ":if_false"))) and str(
-                    ("cd", 0)
-                ) in str(m.cond):
-                    if find_f_list(m.if_false, func_calls) == []:
-                        fi = m.if_false[0]
-                        if m2 := match(fi, ("jd", ":jd", ":stack")):
-                            return int(m2.jd), m2.stack
+            def default_starts(exp):
+                # (where it starts, the stack it starts with), None if it's
+                # not a jump
+                if (m := match(exp, ("if", ":cond", ":if_true", ":if_false"))) and (
+                    is_dispatch(m.cond)
+                ):
+                    res = []
+                    for branch in (m.if_true, m.if_false):
+                        if find_f_list(branch, func_calls) == []:
+                            if branch and (
+                                m2 := match(branch[0], ("jd", ":jd", ":stack"))
+                            ):
+                                res.append((int(m2.jd), m2.stack))
+                            else:
+                                res.append(None)
+                    return res
+                return []
 
-                    if find_f_list(m.if_true, func_calls) == []:
-                        fi = m.if_true[0]
-                        if m2 := match(fi, ("jd", ":jd", ":stack")):
-                            return int(m2.jd), m2.stack
-
-            default = find_f(trace, find_default) if func_list else None
+            starts = find_f_list(trace, default_starts) if func_list else []
+            if len(set(s and s[0] for s in starts)) == 1 and starts[0] is not None:
+                default = starts[0]
+            else:
+                default = None
 
             if default:
                 target, stack = default
