@@ -241,7 +241,8 @@ def comp_bool(left, right):
 
 def is_zero(exp):
     if type(exp) == int:
-        return exp == 0
+        # (as a word)
+        return exp % 2**256 == 0
 
     if type(exp) != tuple:
         return ("iszero", exp)
@@ -321,7 +322,8 @@ def eval_bool(exp, known_true=True, symbolic=True):
         return exp
 
     if type(exp) == int:
-        return exp > 0
+        # a word: true when it isn't 0 (-1 is 2**256 - 1)
+        return exp % 2**256 != 0
 
     if opcode(exp) == "bool":
         return eval_bool(exp[1], known_true=known_true, symbolic=symbolic)
