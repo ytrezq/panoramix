@@ -1791,13 +1791,18 @@ def pretty_memory(exp, add_color=False):
         # bytes, padded with zeroes
         if word(el) == 32 and idx + 1 < len(exp) and type(word(exp[idx + 1])) == int:
             length = word(exp[idx + 1])
-            count = (length + 31) // 32
-            chunks = [data_bytes(w) for w in exp[idx + 2 : idx + 2 + count]]
-            if 0 < length and len(chunks) == count and None not in chunks:
-                b = b"".join(chunks)
+            size = 32 * ((length + 31) // 32)
+            # its bytes, in as many parts as they come
+            b, end = b"", idx + 2
+            while end < len(exp) and len(b) < size:
+                if (chunk := data_bytes(exp[end])) is None:
+                    break
+                b += chunk
+                end += 1
+            if 0 < length and len(b) == size:
                 if not any(b[length:]) and (text := pretty_text(b[:length])):
                     res.append(text)
-                    idx += 2 + count
+                    idx = end
                     continue
 
         # bytes that are text, as parts of the data (hashed, say)
