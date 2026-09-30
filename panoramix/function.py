@@ -58,6 +58,44 @@ def word(exp):
     return exp
 
 
+# What a function returning a constant may read: where the contract is.
+CONSTANT_SYMBOLS = ("address", "codesize")
+
+# The operations that read what can change: the calldata, the state, the
+# environment.
+VARYING_READS = (
+    "cd",
+    "call.data",
+    "storage",
+    "tload",
+    "balance",
+    "extcodesize",
+    "extcodehash",
+    "extcodecopy",
+    "blockhash",
+    "blobhash",
+)
+
+
+def varies(exp):
+    """True if exp reads something that isn't a constant of the contract."""
+    if type(exp) is str:
+        return exp not in CONSTANT_SYMBOLS
+
+    if type(exp) is list:
+        return any(varies(e) for e in exp)
+
+    if type(exp) is tuple and exp:
+        if exp[0] in VARYING_READS:
+            return True
+        if exp[0] == "var":
+            # its value is set in the trace, and checked there
+            return False
+        return any(varies(e) for e in exp[1:])
+
+    return False
+
+
 class Function(EasyCopy):
     def __init__(self, hash, trace):
         self.hash = hash
@@ -516,10 +554,9 @@ class Function(EasyCopy):
             const func detection
         """
 
-        self.const = self.read_only
-        for exp in ["storage", "calldata", "calldataload", "store", "cd"]:
-            if exp in str(self.trace) or len(self.returns) != 1:
-                self.const = False
+        self.const = (
+            self.read_only and len(self.returns) == 1 and not varies(self.trace)
+        )
 
         if self.const:
             self.const = self.returns[0]
