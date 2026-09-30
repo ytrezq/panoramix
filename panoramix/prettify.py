@@ -1222,9 +1222,9 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
     if m := match(exp, ("extcodecopy", ":addr", ":loc")):
         return f"ext_code.copy({pret(m.addr)}, {pret(m.loc)})"
 
-    if opcode(exp) == "max":
+    if opcode(exp) in ("max", "min"):
         _, *terms = exp
-        return "max({})".format(", ".join([pret(e) for e in terms]))
+        return "{}({})".format(opcode(exp), ", ".join([pret(e) for e in terms]))
 
     if exp == "number":
         return "block.number"

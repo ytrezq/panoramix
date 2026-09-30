@@ -17,7 +17,8 @@ something for sure, it says less (a raw `stor[...]`, `mem[...]`, a
 - Casts keep the low bits: `uint8(x)` is `x % 2**8`, `address(x)` the low 160
   bits; `int8(x)` is the low 8 bits sign-extended; `bool(x)` is 1 when `x`
   isn't 0. `Mask(size, off, x)` is the bits `off` to `off + size` of `x`, in
-  place (the others 0). `ceil32(x)` / `floor32(x)` round to a multiple of 32.
+  place (the others 0). `ceil32(x)` / `floor32(x)` round to a multiple of 32,
+  `min(x, y)` / `max(x, y)` are the smaller and the larger.
 
 ## Operators
 
@@ -34,7 +35,9 @@ comparisons, `|`, `^`, `&`, `<< >>`, `+ -`, `* / %`, unary `-`, `**`.
 
 ## Statements
 
-- `require cond`: reverts (with no data) unless `cond`.
+- `require cond`: reverts (with no data) unless `cond`; `assert cond`: runs an
+  invalid opcode (the check of solidity < 0.8, all the gas used) unless
+  `cond`.
 - `revert with ...`, `return ...`: end the call with that data (see Data);
   `stop`: with none; `invalid`: an invalid opcode (all the gas used).
   `revert with 'text'` is the `Error(string)` of that text, `revert with
@@ -87,7 +90,15 @@ how wide it is:
   called (`x` in `call x.f(...)`, `eth.balance(x)`...) is the low 160 bits
   of `x`, as for the EVM.
   `ext_call.success` is its result, `ext_call.return_data[a len n]` what it
-  returned, `return_data.size` how much.
+  returned (zeroes past it), `return_data.size` how much. What a call writes
+  to memory is said after it: `mem[a len min(32, return_data.size)] =
+  ext_call.return_data[0 len min(32, return_data.size)]`, the rest of the 32
+  bytes it gave for it left as it was.
+- `x = ecrecover(...) # precompiled` calls a precompiled contract
+  (`ecrecover`, `sha256hash`, `identity`...) with that data: `x` is the
+  first word it returns (0 if none), `ecrecover.result` its success
+  (`memcopy.success` for `identity`), and `return_data.size` and
+  `ext_call.return_data` are what it returned.
 
 ## Events
 

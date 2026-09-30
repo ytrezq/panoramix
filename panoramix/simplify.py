@@ -1387,39 +1387,82 @@ def loop_to_setmem_from_storage(line):
 
 
 def apply_constraint(exp, constr):
-    # for constraints like "isZero XX % 32", applies them to expression
+    """
+    exp, where the condition constr holds: a min of two values it decides
+    is one of them - min(32, return_data.size), the size of what a call
+    wrote (see vm.VM.output_write), is 32 once return_data.size >= 32.
+    """
+    if "min" not in str(exp):
+        return exp
 
-    return exp
+    bounds = cond_bounds(constr)
+    if not bounds:
+        return exp
 
-    if match(constr, ("mask_shl", 5, 0, 0, Any)):
+    def f(e):
+        if opcode(e) == "min" and len(e) == 3:
+            le = decide_le(e[1], e[2], bounds)
+            if le is True:
+                return e[1]
+            if le is False:
+                return e[2]
+        return e
 
-        def f(x):
-            if m := match(
-                x, ("mask_shl", ":int:size", 5, ":int:shl", ("add", 31, ":val"))
-            ):
-                return ("add", 32 * (2**m.shl), ("mask_shl", m.size, 5, m.shl, m.val))
-            if m := match(x, ("mask_shl", ":int:size", 5, 0, ":val")):
-                return ("mask_shl", m.size, 5, 0, m.val)
+    return replace_f(exp, f)
 
-            return x
 
-        return replace_f(exp, f)
+def cond_bounds(cond):
+    """
+    {x: (lowest, highest)}: the values an expression x can have where the
+    condition holds, when it's a comparison of x with a number (unsigned).
+    """
+    neg = False
+    while opcode(cond) == "iszero":
+        neg, cond = not neg, cond[1]
+    op = opcode(cond)
+    if op not in ("lt", "gt", "le", "ge", "eq", "slt", "sgt", "sle", "sge"):
+        return {}
+    if len(cond) != 3:
+        return {}
+    a, b = cond[1], cond[2]
+    if type(a) is int and type(b) is not int:
+        # c < x is x > c...
+        a, b = b, a
+        op = {"lt": "gt", "gt": "lt", "le": "ge", "ge": "le", "eq": "eq"}.get(
+            op, {"slt": "sgt", "sgt": "slt", "sle": "sge", "sge": "sle"}.get(op)
+        )
+    if type(b) is not int or type(a) is int or not 0 <= b < 2**256:
+        return {}
+    if op[0] == "s":
+        # signed: as unsigned, of a size far below 2**255 (see
+        # memloc.max_value_bits) and a positive number
+        if max_value_bits(a) >= 255 or b >= 2**255:
+            return {}
+        op = op[1:]
+    if neg:
+        if op == "eq":
+            return {}
+        op = {"lt": "ge", "ge": "lt", "gt": "le", "le": "gt"}[op]
+    top = 2**256 - 1
+    lo, hi = {
+        "lt": (0, b - 1),
+        "le": (0, b),
+        "gt": (b + 1, top),
+        "ge": (b, top),
+        "eq": (b, b),
+    }[op]
+    return {a: (lo, hi)} if lo <= hi else {}
 
-    if match(constr, ("iszero", ("mask_shl", 5, 0, 0, Any))):
 
-        def f(x):
-            if m := match(x, ("mask_shl", ":int:size", 5, 0, ("add", 31, ":val"))):
-                return ("mask_shl", m.size + 5, 0, 0, m.val)
-            if m := match(x, ("mask_shl", ":int:size", 5, 0, ":val")):
-                return ("mask_shl", m.size + 5, 0, 0, m.val)
-            if match(x, ("mask_shl", 5, 0, 0, ":val")):
-                return 0
-
-            return x
-
-        return replace_f(exp, f)
-
-    return exp
+def decide_le(a, b, bounds):
+    """a <= b by the bounds of cond_bounds, None if they don't say."""
+    if type(a) is int and b in bounds:
+        lo, hi = bounds[b]
+        return True if lo >= a else False if hi < a else None
+    if type(b) is int and a in bounds:
+        lo, hi = bounds[a]
+        return True if hi <= b else False if lo > b else None
+    return None
 
 
 def low_zero_bits(exp):

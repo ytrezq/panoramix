@@ -190,6 +190,15 @@ def bound(v, known):
     by what it's made of - a size of what the call has, say, that gas keeps
     far from 2**256 (see memloc.BOUNDED_SYMBOLS). None if there's none.
     """
+    if opcode(v) == "min":
+        # (the size of what a call wrote, see VM.output_write)
+        tops = [
+            t
+            for t in (x if type(x) is int else bound(x, known) for x in v[1:])
+            if t is not None
+        ]
+        return min(tops) if tops and 0 <= min(tops) < 2**128 else None
+
     top = upper_bound(v, known)
     if top is None:
         # the bounds of what it's made of (see VM.snapshot)
@@ -318,6 +327,13 @@ def read_memory(known, addr):
         return None
 
     return res
+
+
+def known_zeroes(known, start, size):
+    """True if the memory start..start + size is known to be zeroes."""
+    if type(start) is not int or type(size) is not int or size <= 0:
+        return False
+    return all(read_memory(known, start + off) == 0 for off in range(0, size, 32))
 
 
 def forget(known, names):
@@ -1055,6 +1071,7 @@ class VM(EasyCopy):
         logger.debug("VM._run stack=%s", stack)
         self.stack = Stack(stack)
         self.known = known
+        self.halted = False
         trace = []
 
         i = start
@@ -1104,6 +1121,9 @@ class VM(EasyCopy):
 
             else:
                 self.apply_stack(trace, line)
+                if self.halted:
+                    # (the instruction ended the path, see returndatacopy)
+                    return trace
 
             i = self.loader.next_line(i)
 
@@ -1630,6 +1650,22 @@ class VM(EasyCopy):
             ret_pos = stack.pop()
             data_len = stack.pop()
 
+            # a copy of more than there is halts, as an invalid opcode does
+            end = add_op(ret_pos, data_len)
+            beyond = ("lt", "returndatasize", end)
+            try:
+                # (sizes: far from 2**256)
+                decided = lt_op("returndatasize", end)
+            except CannotCompare:
+                decided = is_known(beyond, self.known)
+            if decided is None:
+                trace(("if", beyond, [("invalid", "returndatacopy")], []))
+                self.known += (is_zero(beyond),)
+            elif decided:
+                trace(("invalid", "returndatacopy"))
+                self.halted = True
+                return
+
             if data_len != 0:
                 return_data = ("ext_call.return_data", ret_pos, data_len)
                 #                return_data = mask_op(('ext_call.return_data', bits(add_op(data_len, ret_pos))), size=bits(data_len), shl=bits(ret_pos))
@@ -1675,10 +1711,9 @@ class VM(EasyCopy):
             self.call_len = ret_len
             stack.append("delegate.return_code")
 
-            if 0 != ret_len:
-                return_data = ("delegate.return_data", 0, ret_len)
-
-                trace(("setmem", ("range", ret_start, ret_len), return_data))
+            self.output_write(
+                trace, lambda n: ("delegate.return_data", 0, n), ret_start, ret_len
+            )
 
         elif op == "callcode":
             gas = stack.pop()
@@ -1716,10 +1751,9 @@ class VM(EasyCopy):
             self.call_len = ret_len
             stack.append("callcode.return_code")
 
-            if 0 != ret_len:
-                return_data = ("callcode.return_data", 0, ret_len)
-
-                trace(("setmem", ("range", ret_start, ret_len), return_data))
+            self.output_write(
+                trace, lambda n: ("callcode.return_data", 0, n), ret_start, ret_len
+            )
 
         elif op == "create":
             wei, mem_start, mem_len = stack.pop(), stack.pop(), stack.pop()
@@ -1822,6 +1856,31 @@ class VM(EasyCopy):
 
         stack.cleanup()
 
+    def output_write(self, trace, data, ret_start, ret_len):
+        """
+        What a call returns, written to the ret_len bytes of memory at
+        ret_start it gives for it: min(ret_len, return_data.size) of them -
+        the others stay as they were, a callee may return less (a token of
+        before ERC-20 returns nothing). data: the return data, (name, 0, n)
+        its n first bytes.
+
+        Where the memory is known to be zeroes (a solidity ecrecover), that
+        is the return data padded with zeroes; otherwise the write is of the
+        bytes returned, and a read of it where return_data.size >= ret_len
+        is known (the check solc makes after a call) is of the return data
+        (see simplify.apply_constraint).
+        """
+        try:
+            if not lt_op(0, ret_len):
+                return
+        except CannotCompare:
+            pass
+        if known_zeroes(self.known, ret_start, ret_len):
+            trace(("setmem", ("range", ret_start, ret_len), data(ret_len)))
+            return
+        size = ("min", ret_len, "returndatasize")
+        trace(("setmem", ("range", ret_start, size), data(size)))
+
     def handle_call(self, op, trace):
         stack = self.stack
 
@@ -1839,8 +1898,28 @@ class VM(EasyCopy):
         ret_len = stack.pop()
 
         if addr == 4:  # Identity
-            m = mem_load(arg_start, arg_len)
-            trace(("setmem", ("range", ret_start, arg_len), m))
+            # its return data is what it's given: as much of it as there's
+            # room for is written (and it's what the next returndatacopy
+            # copies)
+            args = mem_load(arg_start, arg_len)
+            trace(("precompiled", "memcopy", "identity", args))
+            if ret_len == arg_len:
+                size = ret_len
+            elif type(ret_len) is int and type(arg_len) is int:
+                size = min(ret_len, arg_len)
+            else:
+                size = ("min", ret_len, arg_len)
+            try:
+                if lt_op(0, size):
+                    trace(
+                        (
+                            "setmem",
+                            ("range", ret_start, size),
+                            mem_load(arg_start, size),
+                        )
+                    )
+            except CannotCompare:
+                trace(("setmem", ("range", ret_start, size), mem_load(arg_start, size)))
 
             stack.append("memcopy.success")
 
@@ -1854,12 +1933,14 @@ class VM(EasyCopy):
             var_name = base if count == 1 else f"{base}{count}"
 
             trace(("precompiled", var_name, precompiled[addr], args))
-            if ret_len == 32:
+            if ret_len == 32 and known_zeroes(self.known, ret_start, 32):
+                # the word it returns, or zeroes (ecrecover of a wrong
+                # signature returns nothing): the result
                 trace(("setmem", ("range", ret_start, 32), ("var", var_name)))
-            elif ret_len != 0:
-                # more than a word (bn256Add...)
-                return_data = ("ext_call.return_data", 0, ret_len)
-                trace(("setmem", ("range", ret_start, ret_len), return_data))
+            else:
+                self.output_write(
+                    trace, lambda n: ("ext_call.return_data", 0, n), ret_start, ret_len
+                )
 
             stack.append("{}.result".format(precompiled[addr]))
 
@@ -1890,10 +1971,6 @@ class VM(EasyCopy):
 
             stack.append("ext_call.success")
 
-            try:
-                if lt_op(0, ret_len):
-                    return_data = ("ext_call.return_data", 0, ret_len)
-                    trace(("setmem", ("range", ret_start, ret_len), return_data))
-            except CannotCompare:
-                return_data = ("ext_call.return_data", 0, ret_len)
-                trace(("setmem", ("range", ret_start, ret_len), return_data))
+            self.output_write(
+                trace, lambda n: ("ext_call.return_data", 0, n), ret_start, ret_len
+            )
