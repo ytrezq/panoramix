@@ -1588,6 +1588,11 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
             if size + offset == 256:
                 return wrap(shifted, SHIFT)
 
+            if size == 1:
+                # its lowest bit: not a bool (bool(x) is x != 0)
+                op_mod = COLOR_BOLD + " % " + ENDC if add_color else " % "
+                return wrap(f"({shifted}){op_mod}2", MUL)
+
             type_name = mask_to_type(size)
             if type_name is None and size % 8 == 0:
                 type_name = f"uint{size}"
