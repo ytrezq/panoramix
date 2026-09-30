@@ -975,6 +975,16 @@ def _mask_op(exp, size=256, offset=0, shl=0, shr=0):
     shl = sub_op(shl, shr)
     shr = 0
 
+    if (
+        m := match(exp, ("storage", ":stor_size", ":int:stor_offset", ":stor_idx"))
+    ) and m.stor_offset < 0:
+        # a field moved left (see apply_mask_to_storage): a mask of the field,
+        # moved
+        field = ("storage", m.stor_size, 0, m.stor_idx)
+        return mask_op(
+            ("mask_shl", m.stor_size, 0, -m.stor_offset, field), size, offset, shl
+        )
+
     if m := match(exp, ("storage", ":stor_size", ":stor_offset", ":stor_idx")):
         # trimming the storage inside
 

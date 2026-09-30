@@ -256,10 +256,7 @@ class Contract:
 
         def mask_storage(exp):
             if m := match(exp, ("stor", ":size", ":off", ":idx")):
-                size, off, idx = m.size, m.off, m.idx
-                if isinstance(off, int) and off < 0:
-                    off = 0
-                return ("type", size, ("field", off, ("stor", idx)))
+                return ("type", m.size, ("field", m.off, ("stor", m.idx)))
             else:
                 return exp
 

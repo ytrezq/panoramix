@@ -218,8 +218,10 @@ def simplify_trace(trace, timeout=0):
     explain("final setmem/condition cleanup", trace)
 
     def fix_storages(exp):
+        # a field moved left (see algebra.apply_mask_to_storage): the field,
+        # shifted
         if (m := match(exp, ("storage", ":size", ":int:off", ":loc"))) and m.off < 0:
-            return ("storage", m.size, 0, m.loc)
+            return ("mask_shl", m.size, 0, -m.off, ("storage", m.size, 0, m.loc))
         return exp
 
     trace = replace_f(trace, fix_storages)

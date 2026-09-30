@@ -139,7 +139,11 @@ def split_or(value):
             continue
 
         if m := match(row, ("storage", ":size", ":off", ":idx")):
-            ret_rows.append((m.size, 0, row))
+            if type(m.off) == int and m.off < 0:
+                # a field moved left (see algebra.apply_mask_to_storage)
+                ret_rows.append((m.size, -m.off, ("storage", m.size, 0, m.idx)))
+            else:
+                ret_rows.append((m.size, 0, row))
             continue
 
         if opcode(row) != "mask_shl":
