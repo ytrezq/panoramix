@@ -509,6 +509,7 @@ def _sparser(orig_storages):
             terms = [t[2] if opcode(t) == "bytes" else t for t in terms]
             e = ("sha3",) + tuple(terms)
         if m := match(e, ("sha3", ":int:loc")):
+            dynamic_bases.add(m.loc)
             return ("loc", m.loc)
         elif m := match(e, ("sha3", ("sha3", ...), ":int:loc")):
             terms = tuple(e[1][1:])  # "..."
@@ -631,6 +632,7 @@ def _sparser(orig_storages):
 
         if opcode(idx) == "add" and get_loc(idx) is None:
             if m := match(idx, ("add", ":int:loc", ":pos")):
+                fixed_bases.setdefault(m.loc, set()).add(size)
                 s = ("stor", size, offset, ("array", m.pos, ("loc", m.loc)))
             else:
                 logger.warning(f"Weird storage index, {idx}")
@@ -655,7 +657,15 @@ def _sparser(orig_storages):
         op, size, offset, idx = s
         assert op == "stor"
 
-        if type(idx) == int:
+        if type(idx) == int and idx in fixed_bases and idx not in dynamic_bases:
+            # the first slot of a fixed array: its first elements
+            if size in fixed_bases[idx] and type(offset) == int and offset % size == 0:
+                idx = ("array", offset // size, ("loc", idx))
+                offset = 0
+            else:
+                idx = ("loc", idx)
+
+        elif type(idx) == int:
             if str(("loc", idx)) in str(storages):
                 assert type(idx) == int, idx
                 idx = ("length", ("loc", idx))
