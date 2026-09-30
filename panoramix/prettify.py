@@ -50,7 +50,6 @@ from panoramix.utils.helpers import (
     opcode,
     padded_hex,
     precompiled,
-    pretty_bignum,
     replace_f,
     replace_lines,
     to_exp2,
@@ -1065,6 +1064,13 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
 
     if opcode(exp) == "arr" and len(exp) > 1:
         _, l, *terms = exp
+        chunks = [data_bytes(t) for t in terms]
+        if type(l) == int and None not in chunks:
+            # a string
+            b = b"".join(chunks)
+            if len(b) >= l and not any(b[l:]) and (text := pretty_text(b[:l])):
+                return text
+
         return (
             col("Array(len=", COLOR_GRAY)
             + pret(l)
@@ -1664,6 +1670,39 @@ def pretty_fname(exp, add_color=False, force=False):
     return exp
 
 
+# the characters of a text: the printable ones and the whitespace
+TEXT_CHARS = set(map(chr, range(0x20, 0x7F))) | {"\n", "\r", "\t"}
+
+
+def data_bytes(exp):
+    """The bytes of exp as an element of a data, if they're known."""
+    if m := match(exp, ("bytes", ":int:size", ":int:val")):
+        if 0 <= m.val < 2 ** (8 * m.size):
+            return m.val.to_bytes(m.size, "big")
+    elif type(exp) == int and 0 <= exp < 2**256:
+        return exp.to_bytes(32, "big")
+
+    return None
+
+
+def pretty_text(b):
+    """The bytes b as a string literal, if they're text."""
+    text = b.decode("latin-1")
+    if not all(c in TEXT_CHARS for c in text) or not any(c.isalnum() for c in text):
+        return None
+
+    for char, escaped in (
+        ("\\", "\\\\"),
+        ("'", "\\'"),
+        ("\n", "\\n"),
+        ("\r", "\\r"),
+        ("\t", "\\t"),
+    ):
+        text = text.replace(char, escaped)
+
+    return f"'{text}'"
+
+
 def pretty_memory(exp, add_color=False):
     if exp is None:
         return tuple()
@@ -1684,13 +1723,11 @@ def pretty_memory(exp, add_color=False):
 
     idx = 0
 
-    def unmask(exp):
-        if opcode(exp) == "mask_shl":
-            return exp[4]
-
-        return exp
-
-    # merge things that look like string into a string
+    def word(e):
+        # the number of a word of the data
+        if m := match(e, ("bytes", 32, ":int:val")):
+            return m.val
+        return e
 
     while idx < len(exp):
         if idx == 0 and (m := match(exp[0], ("bytes", 4, ":int:selector"))):
@@ -1701,40 +1738,30 @@ def pretty_memory(exp, add_color=False):
 
         el = exp[idx]
 
-        # detect a potential string
+        # an ABI-encoded string: its offset, its length, the words of its
+        # bytes, padded with zeroes
+        if word(el) == 32 and idx + 1 < len(exp) and type(word(exp[idx + 1])) == int:
+            length = word(exp[idx + 1])
+            count = (length + 31) // 32
+            chunks = [data_bytes(w) for w in exp[idx + 2 : idx + 2 + count]]
+            if 0 < length and len(chunks) == count and None not in chunks:
+                b = b"".join(chunks)
+                if not any(b[length:]) and (text := pretty_text(b[:length])):
+                    res.append(text)
+                    idx += 2 + count
+                    continue
 
-        out_str = None
+        # bytes that are text, as parts of the data (hashed, say)
+        end = idx
+        while end < len(exp) and data_bytes(exp[end]) is not None:
+            end += 1
+        b = b"".join(data_bytes(e) for e in exp[idx:end])
+        if len(b) >= 4 and (text := pretty_text(b)):
+            res.append(text)
+            idx = end
+            continue
 
-        if unmask(el) == 32 and len(exp) > idx + 1:
-            length = unmask(exp[idx + 1])
-            if type(length) == int:
-                byte_length = ((length - 1) >> 5) + 1
-                out_str = ""
-
-                if type(length) == int and len(exp) > idx + 1 + byte_length:
-                    for i in range(byte_length):
-                        if type(unmask(exp[idx + 2 + i])) == str:
-                            out_str += unmask(exp[idx + 2 + i])[1:-1]
-                        elif type(pretty_bignum(unmask(exp[idx + 2 + i]))) == str:
-                            # could also make sure that the length of string is the same
-                            # as expected
-                            out_str += pretty_bignum(unmask(exp[idx + 2 + i]))[1:-1]
-                        else:
-                            out_str = None
-                            break
-
-                    if out_str != None:
-                        idx = idx + 1 + byte_length
-                else:
-                    out_str = None
-            else:
-                out_str = None
-
-        if out_str != None:
-            res.append("'" + out_str + "'")
-        else:
-            res.append(prettify(el, add_color=add_color, parentheses=False))
-
+        res.append(prettify(el, add_color=add_color, parentheses=False))
         idx = idx + 1
 
     return tuple(res)
