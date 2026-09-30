@@ -632,23 +632,6 @@ def split_store(line):
             # slot is one of the others)
             return [line]
 
-        if same and len(values) == 1 and type(values[0][2]) == int:
-            # a number set in a slot, the rest of it kept: the bits the store
-            # doesn't keep, when they're together, are the field it sets (the
-            # compiler clears them with its mask) - the number says nothing
-            # of how wide it is (1 in an address)
-            free, pos = [], 0
-            for s_size, s_off, s_val in same:
-                if s_off > pos:
-                    free.append((pos, s_off))
-                pos = s_off + s_size
-            if pos < 256:
-                free.append((pos, 256))
-            v_size, v_off, v_val = values[0]
-            if len(free) == 1 and 0 <= v_val < 2**v_size:
-                lo, hi = free[0]
-                return [("store", hi - lo, lo, idx, v_val << (v_off - lo))]
-
         res = []
         # the word is written whole: the bits of no part are set to 0
         pos = 0

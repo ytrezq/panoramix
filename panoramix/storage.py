@@ -889,6 +889,189 @@ def find_hashes(exp):
     return res
 
 
+def layout(accs):
+    """
+    The variables of a slot, (off, end) each, from its accesses (size, off,
+    written - see find_accesses): what's written (a read of more than one is
+    printed raw), else what's read. A number written says nothing of how
+    wide it is - a store of the word, split, sets 1 in a byte and 0 in the
+    bits above it -, so its bits are variables of their own only where
+    nothing else is written.
+    """
+    written = [(size, off) for size, off, wr in accs if wr is True]
+    numbers = [(size, off) for size, off, wr in accs if wr == "const"]
+    fields = merge_ranges(written)
+    numbers = merge_ranges(uncovered(numbers, fields))
+    return merge_ranges(
+        [(e - o, o) for o, e in fields + numbers]
+        or [(size, off) for size, off, wr in accs]
+    )
+
+
+def slot_class(st):
+    """
+    What the slots of the same place of a variable have in common - the
+    steps to them, without their keys and indexes: the slot of every element
+    of a mapping, the second slot of every struct of an array.
+    """
+    if st is None:
+        return None
+    root, sts = st
+    res = []
+    for s in sts:
+        if s[0] == "map":
+            res.append(("map", s[2]))
+        elif s[0] == "data":
+            res.append(("data",))
+        elif s[0] == "off":
+            i, stride, c = linear(s[1])
+            res.append(("off", stride, c))
+        else:
+            return None
+    return root, tuple(res)
+
+
+class Regroup:
+    """
+    The stores of the variables of a slot, not of the parts a store of the
+    whole word was split in (memloc.split_store): 1 in the bits 216-224 and
+    0 in the 224-240 are 1 in the uint16 at 216 and 0 in the uint8 at 232;
+    1 in the bits 0-8 and 0 in the 8-160 of an element of a mapping of
+    addresses is 1 in it. The variables are those of all the slots of the
+    same place (see slot_class, layout).
+    """
+
+    def __init__(self, functions, lang):
+        accesses = {}
+        for f in functions:
+            find_accesses(f.trace, accesses)
+        self.cls = {}
+        by_cls = {}
+        for (size, off, idx), wr in accesses.items():
+            try:
+                c = slot_class(steps(parse(idx, lang)))
+            except Exception:
+                c = None
+            self.cls[(size, off, idx)] = c
+            if c is not None:
+                by_cls.setdefault(c, []).append((size, off, wr))
+        self.fields = {
+            c: layout(accs)
+            for c, accs in by_cls.items()
+            if all(type(size) == int and type(off) == int for size, off, wr in accs)
+        }
+
+    def store(self, line):
+        """(class, size, off, value, idx) of a store of bits of a slot of known fields"""
+        if not (m := match(line, ("store", ":int:size", ":int:off", ":idx", ":val"))):
+            return None
+        c = self.cls.get((m.size, m.off, m.idx))
+        if c not in self.fields:
+            return None
+        return c, m.size, m.off, m.val, m.idx
+
+    def trace(self, trace):
+        if type(trace) != list:
+            return trace
+        lines = [
+            (
+                tuple(self.trace(e) if type(e) == list else e for e in line)
+                if type(line) == tuple
+                else line
+            )
+            for line in trace
+        ]
+        res, i = [], 0
+        while i < len(lines):
+            first = self.store(lines[i])
+            j = i + 1
+            while (
+                first is not None
+                and j < len(lines)
+                and (s := self.store(lines[j])) is not None
+                and s[4] == first[4]
+            ):
+                j += 1
+            if first is not None:
+                res += self.run(lines[i:j])
+            else:
+                res.append(lines[i])
+            i = j
+        return res
+
+    def run(self, lines):
+        """stores one after the other in the same slot, per variable of it"""
+        run = [self.store(line) for line in lines]
+        c, idx = run[0][0], run[0][4]
+        # parts of different bits, their values not reading the slot (else
+        # they'd read what the others write) - nor another of the same place:
+        # it may be the same
+        bits = sorted((off, off + size) for _, size, off, val, i in run)
+        if any(a[1] > b[0] for a, b in zip(bits, bits[1:])):
+            return lines
+        for _, size, off, val, i in run:
+            reads = {}
+            find_accesses(val, reads)
+            if any(self.cls.get(a) in (None, c) for a in reads):
+                return lines
+
+        # a number in whole variables (0 in the word: a delete) stays one
+        fields = self.fields[c]
+
+        def whole(size, off):
+            inside = [(lo, hi) for lo, hi in fields if lo < off + size and off < hi]
+            return all(off <= lo and hi <= off + size for lo, hi in inside) and (
+                sum(hi - lo for lo, hi in inside) == size
+            )
+
+        res = [
+            ("store", size, off, idx, val)
+            for _, size, off, val, i in run
+            if type(val) == int and whole(size, off)
+        ]
+        run = [r for r in run if not (type(r[3]) == int and whole(r[1], r[2]))]
+        for lo, hi in fields:
+            parts = []
+            for _, size, off, val, i in run:
+                a, b = max(lo, off), min(hi, off + size)
+                if a >= b:
+                    continue
+                if type(val) == int:
+                    # (a number's bits in this variable)
+                    parts.append((b - a, a, (val >> (a - off)) % 2 ** (b - a)))
+                elif (a, b) == (off, off + size):
+                    parts.append((size, off, val))
+                else:
+                    # a value over two variables
+                    return lines
+            if not parts:
+                continue
+            covered = sum(size for size, off, val in parts) == hi - lo
+            others = [p for p in parts if type(p[2]) != int]
+            if covered and not others:
+                value = sum(val << (off - lo) for size, off, val in parts)
+                parts = [(hi - lo, lo, value)]
+            elif (
+                covered
+                and len(others) == 1
+                and others[0][1] == lo
+                and value_bits(others[0][2]) <= others[0][0]
+                and all(val == 0 for size, off, val in parts if type(val) == int)
+            ):
+                parts = [(hi - lo, lo, others[0][2])]
+            for size, off, val in parts:
+                res.append(("store", size, off, idx, val))
+
+        if sorted(line[1:3] for line in res) == sorted(
+            line[1:3] for line in lines
+        ) or not all(whole(line[1], line[2]) for line in res):
+            # the same stores - or some still not of whole variables
+            return lines
+        for line in res:
+            self.cls[line[1:4]] = c
+        return sorted(res, key=lambda line: line[2])
+
+
 def uncovered(parts, ranges):
     """the (size, off) of the bits of the parts (size, off) no range (off, end) has"""
     res = []
@@ -1221,22 +1404,11 @@ class Storage:
             if all(not st for st, size, off, wr in accs) and all(
                 type(off) == int for st, size, off, wr in accs
             ):
-                written = [(size, off) for st, size, off, wr in accs if wr is True]
-                numbers = [(size, off) for st, size, off, wr in accs if wr == "const"]
                 read = [(size, off) for st, size, off, wr in accs]
                 if is_bytes_slot(set(read)):
                     self.types[n] = ("bytes",)
                     continue
-                # the variables are what's written (a read of more than one
-                # is printed raw), else what's read; a number written says
-                # nothing of how wide it is (a store of the word, split, sets
-                # 1 and the 0 above it as two), so its bits are variables of
-                # their own only where nothing else is written
-                fields = merge_ranges(written)
-                numbers = merge_ranges(uncovered(numbers, fields))
-                self.fields[n] = merge_ranges(
-                    [(e - o, o) for o, e in fields + numbers] or read
-                )
+                self.fields[n] = layout([(size, off, wr) for st, size, off, wr in accs])
                 continue
             try:
                 self.types[n] = typeof([(st, size, off) for st, size, off, wr in accs])
@@ -1457,104 +1629,7 @@ class Storage:
 
     def rewrite(self, trace):
         """the trace with the accesses printed as their paths"""
-        return rewrite_accesses(self.regroup(trace), self.form)
-
-    """
-        stores of the variables of a slot, not of the parts a store of the
-        whole word was split in (memloc.split_store): 1 in the bits 216-224
-        and 0 in the 224-240 are 1 in the uint16 at 216 and 0 in the uint8
-        at 232
-    """
-
-    def value_store(self, line):
-        """(slot, size, off, value, idx) of a store of bits of a value slot"""
-        if not (m := match(line, ("store", ":int:size", ":int:off", ":idx", ":val"))):
-            return None
-        st = self.steps.get((m.size, m.off, m.idx))
-        if st is None or st[1] or st[0] not in self.fields:
-            return None
-        return st[0], m.size, m.off, m.val, m.idx
-
-    def regroup(self, trace):
-        if type(trace) != list:
-            return trace
-        lines = [
-            (
-                tuple(self.regroup(e) if type(e) == list else e for e in line)
-                if type(line) == tuple
-                else line
-            )
-            for line in trace
-        ]
-        res, i = [], 0
-        while i < len(lines):
-            first = self.value_store(lines[i])
-            j = i + 1
-            while (
-                first is not None
-                and j < len(lines)
-                and (s := self.value_store(lines[j])) is not None
-                and s[0] == first[0]
-            ):
-                j += 1
-            if first is not None:
-                res += self.regroup_run([self.value_store(line) for line in lines[i:j]])
-            else:
-                res.append(lines[i])
-            i = j
-        return res
-
-    def regroup_run(self, run):
-        """the stores (slot, size, off, value, idx) one after the other, per variable"""
-        n, idx = run[0][0], run[0][4]
-        lines = [("store", size, off, i, val) for _, size, off, val, i in run]
-        # parts of different bits, their values not reading the slot (else
-        # they'd read what the others write)
-        bits = sorted((off, off + size) for _, size, off, val, i in run)
-        if any(a[1] > b[0] for a, b in zip(bits, bits[1:])):
-            return lines
-        for _, size, off, val, i in run:
-            reads = {}
-            find_accesses(val, reads)
-            for a in reads:
-                st = self.steps.get(a)
-                if st is None or st[0] == n:
-                    return lines
-
-        res = []
-        for lo, hi in self.fields[n]:
-            parts = []
-            for _, size, off, val, i in run:
-                a, b = max(lo, off), min(hi, off + size)
-                if a >= b:
-                    continue
-                if type(val) == int:
-                    # (a number's bits in this variable)
-                    parts.append((b - a, a, (val >> (a - off)) % 2 ** (b - a)))
-                elif (a, b) == (off, off + size):
-                    parts.append((size, off, val))
-                else:
-                    # a value over two variables
-                    return lines
-            if not parts:
-                continue
-            covered = sum(size for size, off, val in parts) == hi - lo
-            others = [p for p in parts if type(p[2]) != int]
-            if covered and not others:
-                value = sum(val << (off - lo) for size, off, val in parts)
-                parts = [(hi - lo, lo, value)]
-            elif (
-                covered
-                and len(others) == 1
-                and others[0][1] == lo
-                and value_bits(others[0][2]) <= others[0][0]
-                and all(val == 0 for size, off, val in parts if type(val) == int)
-            ):
-                parts = [(hi - lo, lo, others[0][2])]
-            for size, off, val in parts:
-                self.steps.setdefault((size, off, idx), (n, []))
-                res.append(("store", size, off, idx, val))
-        return sorted(res, key=lambda line: line[2])
+        return rewrite_accesses(trace, self.form)
 
     def header(self):
         """the definitions, as the output lists them"""
@@ -1668,6 +1743,9 @@ def rewrite_functions(functions, code=None):
     for f in functions:
         find_accesses(f.trace, accesses)
     lang = language(code, accesses)
+    regroup = Regroup(functions, lang)
+    for f in functions:
+        f.trace = regroup.trace(f.trace)
     s = Storage(functions, lang)
     for f in functions:
         f.trace = s.getter_trace(f) or s.rewrite(f.trace)
