@@ -60,9 +60,9 @@ how wide it is:
   word) - of bytes `v` (a range, a string...), they're `n` bytes;
 - `mem[a len n]`, `call.data[a len n]`, `ext_call.return_data[a len n]`...:
   those `n` bytes;
-- `'text'`: its bytes - but when it's all the data is (after a 4-byte
-  selector: `revert with 0x08c379a0, 'text'`), it's the ABI-encoded string
-  (offset, length, bytes padded to 32);
+- `'text'`: its bytes - but when it's all the data of a `return` or a
+  `revert` (after a 4-byte selector: `revert with 0x08c379a0, 'text'`), it's
+  the ABI-encoded string (offset, length, bytes padded to 32);
 - `Array(len=l, data=...)`: an ABI-encoded array;
 - the 4-byte selector that starts the data of a revert or a call: printed as
   the error or the function it is when that's known (`Error(string reason)`),

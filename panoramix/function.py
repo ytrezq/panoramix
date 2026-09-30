@@ -454,7 +454,7 @@ class Function(EasyCopy):
                 + " = "
                 + COLOR_BOLD
                 # what the function returns: its data, as a return's
-                + ", ".join(pretty_memory(val))
+                + ", ".join(pretty_memory(val, abi_text=True))
                 + ENDC
             ]
 

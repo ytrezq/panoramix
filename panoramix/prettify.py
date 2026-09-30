@@ -817,7 +817,7 @@ def pretty_line(r, add_color=True):
             # a custom error without params: its selector alone
             param = ("data", param)
 
-        res_mem = pretty_memory(param, add_color=True)
+        res_mem = pretty_memory(param, add_color=True, abi_text=True)
         ret_val = ", ".join(res_mem)
 
         if m := match(r, ("revert", ("data", ("bytes", 4, PANIC), ":int:panic_code"))):
@@ -1949,7 +1949,15 @@ def arr_text(exp):
     return None
 
 
-def pretty_memory(exp, add_color=False):
+def pretty_memory(exp, add_color=False, abi_text=False):
+    """
+    The elements of a list of data, as they're printed. abi_text: it's the
+    data of a return or a revert, where a string that's all the data (after
+    a selector) is the ABI-encoded string (see OUTPUT.md) - an ABI-encoded
+    string is printed 'text' there, and bytes of text that are all the data
+    Bytes(n, 'text'). Elsewhere a string is its bytes, and an ABI-encoded
+    one an Array(len=n, data='text').
+    """
     if exp is None:
         return tuple()
 
@@ -1957,7 +1965,10 @@ def pretty_memory(exp, add_color=False):
         return prettify(exp, add_color=add_color)
 
     if opcode(exp) != "data":
-        return (prettify(exp, add_color=add_color, parentheses=False),)
+        res = prettify(exp, add_color=add_color, parentheses=False)
+        if abi_text:
+            res = raw_text(exp, res)
+        return (res,)
 
     exp = exp[1:]
 
@@ -1985,7 +1996,7 @@ def pretty_memory(exp, add_color=False):
         el = exp[idx]
 
         first = idx == 0 or (idx == 1 and match(exp[0], ("bytes", 4, Any)))
-        if first and idx == len(exp) - 1 and (text := arr_text(el)):
+        if abi_text and first and idx == len(exp) - 1 and (text := arr_text(el)):
             # all the data is an ABI-encoded string (after a selector)
             res.append(text)
             idx += 1
@@ -1993,8 +2004,8 @@ def pretty_memory(exp, add_color=False):
 
         # an ABI-encoded string: its offset, its length, the words of its
         # bytes, padded with zeroes - when it's all the data is (after a
-        # selector): return 'text', revert with Error(string), 'text'. A
-        # string elsewhere is its bytes.
+        # selector): return 'text', revert with Error(string), 'text' (an
+        # Array of it elsewhere). A string elsewhere is its bytes.
         if (
             first
             and word(el) == 32
@@ -2012,6 +2023,8 @@ def pretty_memory(exp, add_color=False):
                 end += 1
             if 0 < length and len(b) == size and end == len(exp):
                 if not any(b[length:]) and (text := pretty_text(b[:length])):
+                    if not abi_text:
+                        text = f"Array(len={length}, data={text})"
                     res.append(text)
                     idx = end
                     continue
@@ -2022,14 +2035,30 @@ def pretty_memory(exp, add_color=False):
             end += 1
         b = b"".join(data_bytes(e) for e in exp[idx:end])
         if len(b) >= 4 and (text := pretty_text(b)):
+            if abi_text and first and end == len(exp):
+                # all the data: its bytes, not the ABI-encoded string
+                text = f"Bytes({len(b)}, {text})"
             res.append(text)
             idx = end
             continue
 
-        res.append(pretty_element(el, add_color))
+        text = pretty_element(el, add_color)
+        if abi_text and first and idx == len(exp) - 1:
+            text = raw_text(el, text)
+        res.append(text)
         idx = idx + 1
 
     return tuple(res)
+
+
+def raw_text(el, printed):
+    """
+    printed, the element el that's all the data of a return or a revert:
+    Bytes(n, 'text') if it's bytes of text - a string alone is ABI-encoded.
+    """
+    if clean_color(printed)[:1] == "'" and (b := data_bytes(el)) is not None:
+        return f"Bytes({len(b)}, {printed})"
+    return printed
 
 
 def with_width(el):
