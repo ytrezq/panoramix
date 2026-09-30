@@ -178,6 +178,9 @@ def simplify_trace(trace, timeout=0):
         trace = cleanup_mems(trace)
         explain("cleanup mems", trace)
 
+        trace = precompiled_results(trace)
+        explain("results of precompiled contracts", trace)
+
         trace = rewrite_trace(trace, split_setmem)
         trace = rewrite_trace_full(trace, split_store)
         explain("split setmems & storages", trace)
@@ -228,6 +231,7 @@ def simplify_trace(trace, timeout=0):
         for _ in range(3):
             trace = cleanup_mems(trace)
 
+    trace = precompiled_results(trace)
     trace = cleanup_conds(trace)
     explain("final setmem/condition cleanup", trace)
 
@@ -1424,14 +1428,32 @@ def apply_constraint(exp, constr):
     return replace_f(exp, f)
 
 
+# what a precompiled contract returns when its call goes through, if it's
+# always as many bytes: a word, or two
+PRECOMPILED_OUTPUT = {
+    "sha256hash.result": 32,
+    "ripemd160hash.result": 32,
+    "bn256Add.result": 64,
+    "bn256ScalarMul.result": 64,
+    "bn256Pairing.result": 32,
+}
+
+
 def cond_bounds(cond):
     """
     {x: (lowest, highest)}: the values an expression x can have where the
-    condition holds, when it's a comparison of x with a number (unsigned).
+    condition holds, when it's a comparison of x with a number (unsigned) -
+    or the success of a call to a precompiled contract that returns as many
+    bytes every time: then return_data.size is that.
     """
     neg = False
-    while opcode(cond) == "iszero":
-        neg, cond = not neg, cond[1]
+    while opcode(cond) in ("iszero", "bool"):
+        if opcode(cond) == "iszero":
+            neg = not neg
+        cond = cond[1]
+    if cond in PRECOMPILED_OUTPUT:
+        n = PRECOMPILED_OUTPUT[cond]
+        return {} if neg else {"returndatasize": (n, n)}
     op = opcode(cond)
     if op not in ("lt", "gt", "le", "ge", "eq", "slt", "sgt", "sle", "sge"):
         return {}
@@ -1736,6 +1758,45 @@ def overwrites_mem(line, mem_idx):
         return any(overwrites_mem(l, mem_idx) for l in line[2] + line[3])
 
     return False
+
+
+def precompiled_results(trace, name=None):
+    """
+    `hash = sha256hash(x) # precompiled`: hash is the first word it returns,
+    0 if none (OUTPUT.md) - what ext_call.return_data[0] is, until what
+    calls return changes. Read as the result it is. (name: the result of the
+    one that returned last, before the trace)
+    """
+    first_word = ("ext_call.return_data", 0, 32)
+    res = []
+    for line in trace:
+        if opcode(line) == "if" and len(line) == 4:
+            cond = (
+                line[1] if name is None else replace(line[1], first_word, ("var", name))
+            )
+            line = (
+                "if",
+                cond,
+                precompiled_results(line[2], name),
+                precompiled_results(line[3], name),
+            )
+            if changes_reads(line, first_word):
+                name = None
+        elif opcode(line) == "while":
+            # (what it's in isn't known at its start: it may have been changed)
+            line = ("while", line[1], precompiled_results(line[2])) + tuple(line[3:])
+            if changes_reads(line, first_word):
+                name = None
+        elif name is not None:
+            if changes_reads(line, first_word):
+                name = None
+            else:
+                line = replace(line, first_word, ("var", name))
+
+        if m := match(line, ("precompiled", ":name", Any, Any)):
+            name = m.name if m.name != "memcopy" else None
+        res.append(line)
+    return res
 
 
 def changes_reads(line, exp):
