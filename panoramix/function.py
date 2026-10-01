@@ -68,6 +68,13 @@ def word(exp):
     return exp
 
 
+def disjuncts(cond):
+    """The conditions cond holds where one of them does: of `a | b`, a and b."""
+    if opcode(cond) == "or" and len(cond) > 1:
+        return [d for e in cond[1:] for d in disjuncts(simplify_bool(e))]
+    return [cond]
+
+
 # What a function returning a constant may read: where the contract is.
 CONSTANT_SYMBOLS = ("address", "codesize")
 
@@ -575,16 +582,23 @@ class Function(EasyCopy):
         # body is what it does whatever ether it's sent (one that always
         # reverts does it with the ether too - with the data it reverts with)
         self.payable = True
-        if opcode(first) == "if" and simplify_bool(first[1]) in (
-            "callvalue",
-            ("iszero", "callvalue"),
-        ):
-            fails, rest = first[2], first[3]
-            if simplify_bool(first[1]) != "callvalue":
-                fails, rest = rest, fails
-            if fails and (
-                fails[0] == ("revert", None) or opcode(fails[0]) == "invalid"
+        if opcode(first) == "if":
+            cond, fails, rest = simplify_bool(first[1]), first[2], first[3]
+            if cond == ("iszero", "callvalue"):
+                cond, fails, rest = "callvalue", rest, fails
+            # (Vyper 0.3.10 checks the size of the calldata with it, `if
+            # call.value or calldata.size < 36: revert`: that check stays)
+            others = [d for d in disjuncts(cond) if d != "callvalue"]
+            if (
+                len(others) < len(disjuncts(cond))
+                and fails
+                and (fails[0] == ("revert", None) or opcode(fails[0]) == "invalid")
             ):
+                if others:
+                    other = others[0]
+                    for d in others[1:]:
+                        other = ("or", other, d)
+                    rest = [("if", other, fails, rest)]
                 self.trace = self.trace[:k] + rest
                 self.payable = False
                 self.value_fails = opcode(fails[0])
