@@ -472,6 +472,22 @@ def is_known(exp, known):
     return None
 
 
+def decided(value, known):
+    """
+    value as the number it is where the known conditions decide it: 0 if
+    they say it's false - 1 if they say it's true and it's a truth value -,
+    else value. (`a && b` leaves a on the stack where it's false: that's 0.)
+    """
+    if type(value) is int:
+        return value
+    res = is_known(value, known)
+    if res is False:
+        return 0
+    if res is True and arithmetic.is_bool(value):
+        return 1
+    return value
+
+
 # the numbers of the loops found (see loop_key)
 loop_keys = itertools.count(1)
 
@@ -1304,6 +1320,14 @@ class VM(EasyCopy):
             vals = [s[idx] for s in stacks]
 
             if all(v == vals[0] for v in vals):
+                continue
+
+            # what a path knows of a value it has of its own: the left of a
+            # `&&` that stopped it is false there
+            vals = [decided(v, h.known) for v, h in zip(vals, hits)]
+
+            if all(v == vals[0] for v in vals):
+                merged[idx] = vals[0]
                 continue
 
             if any(type(v) == int and v in self.loader.jump_dests for v in vals):
