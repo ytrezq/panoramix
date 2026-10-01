@@ -116,7 +116,10 @@ def make(trace):
             # (a loop that can't be made fails the function: without it, what
             # follows the label would read as run once)
             before, inside, remaining, cond = to_while(
-                trace[idx + 1 :], jd, begin=[v_val for _, _, v_val in vars]
+                trace[idx + 1 :],
+                jd,
+                begin=[v_val for _, _, v_val in vars],
+                loop_vars=[v_idx for _, v_idx, _ in vars],
             )
 
             inside = make(inside)
@@ -203,6 +206,67 @@ def writes(trace):
     return False
 
 
+def reads(trace, name):
+    """Whether trace reads the variable name."""
+    return bool(
+        find_f_list(
+            trace,
+            lambda e: (
+                [e]
+                if type(e) is tuple and len(e) == 2 and e[0] == "var" and e[1] == name
+                else []
+            ),
+        )
+    )
+
+
+def exit_values(out, body, after, loop_vars):
+    """
+    `out` is the branch of a loop's exit condition, `body` the other one, and
+    `after` what both go on with: the exit and the breaks of the body merged
+    (see vm.merge_branches), each setting the variables of the merge for what
+    differs on the stack - what a break leaves there, a local of the body in
+    solc 0.4, which keeps its previous value on the exit.
+
+    (body, after) for out written as nothing, None if it can't be: each
+    variable it sets has to be one that `after` doesn't read, or one it sets
+    to a loop variable, that `after` doesn't read otherwise - which stands
+    for it then, the breaks setting it instead.
+    """
+    renames = {}
+    for line in out:
+        if opcode(line) != "setvar":
+            return None
+        _, name, value = line
+        if not reads(after, name):
+            continue
+        if not (
+            opcode(value) == "var"
+            and len(value) == 2
+            and value[1] in loop_vars
+            and value[1] not in renames.values()
+            and not reads(after, value[1])
+            and value[1] not in sets(after)
+        ):
+            return None
+        renames[name] = value[1]
+
+    if not renames:
+        return body, after
+
+    def rename(e):
+        if type(e) is tuple and len(e) == 3 and e[0] == "setvar" and e[1] in renames:
+            return ("setvar", renames[e[1]], e[2])
+        return e
+
+    def renamed(trace):
+        return replace_f(
+            replace_vars(trace, {k: ("var", v) for k, v in renames.items()}), rename
+        )
+
+    return renamed(body), renamed(after)
+
+
 def evaluated_after(path, values):
     """
     Whether the values - of loop variables - are the same evaluated after
@@ -222,11 +286,11 @@ def evaluated_after(path, values):
     return not (writes(path) and any(is_volatile(v) for v in values))
 
 
-def to_while(trace, jd, path=None, begin=()):
+def to_while(trace, jd, path=None, begin=(), loop_vars=()):
     """
     `trace` is what follows a loop label, `jd` the label, `begin` the values
-    of the loop variables at the start. Returns (before, inside, remaining,
-    cond) so that the loop can be written as:
+    of the loop variables at the start (`loop_vars` their names). Returns
+    (before, inside, remaining, cond) so that the loop can be written as:
 
         before
         while cond:
@@ -305,6 +369,20 @@ def to_while(trace, jd, path=None, begin=()):
                 # is left - by the exit condition, a break, a return from
                 # inside it... The if is the body of the loop, which it leaves
                 # when it doesn't continue, and that follows it.
+                if (jd in jds_true) != (jd in jds_false):
+                    body, out = (
+                        (if_true, if_false) if jd in jds_true else (if_false, if_true)
+                    )
+                    exits = exit_values(out, body, trace, loop_vars)
+                    if exits is not None and rotates(body):
+                        # An exit condition, and the paths of the body that
+                        # get to its end are breaks (see prettify.add_breaks):
+                        # all go on with what follows the if - its other
+                        # branch, written as nothing (see exit_values).
+                        body, trace = exits
+                        if jd not in jds_true:
+                            cond = is_zero(cond)
+                        return path, rewrite_trace(body, add_path), trace, cond
                 return [], path + [line], trace, ("bool", 1)
 
             if trace or (jd not in jds_true and jd not in jds_false):

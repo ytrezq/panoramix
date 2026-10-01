@@ -3129,8 +3129,22 @@ def parse_counters(line):
     else:
         starts_before_stop = False
 
-    if starts_before_stop is True:
-        # the values after the loop
+    if starts_before_stop is True and not leaves_loop(path):
+        # the values after the loop - but where a break leaves it before
         a["endvars"] = lastvars
 
     return a
+
+
+def leaves_loop(path):
+    """
+    Whether a path of the body of a loop gets to its end: it leaves the loop
+    there (a break, see prettify.add_breaks) for what follows it, rather than
+    continue it or end the execution.
+    """
+    if not path:
+        return True
+    last = path[-1]
+    if opcode(last) == "if":
+        return len(last) < 4 or leaves_loop(last[2]) or leaves_loop(last[3])
+    return opcode(last) not in ENDS_EXECUTION + ("continue", "undefined", "goto")

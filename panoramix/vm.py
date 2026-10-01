@@ -719,6 +719,8 @@ class VM(EasyCopy):
         self.just_fdests = just_fdests
 
         self.counter = 0
+        # (p, jd) of the merges that were too early to tell, see merge_branches
+        self.pending_merges = {}
         # how many results of each precompile were named
         self.precompile_results = {}
         self.known = ()
@@ -1035,11 +1037,30 @@ class VM(EasyCopy):
         if self.just_fdests:
             return
 
+        # The exits of a loop: where the exit condition at its head and a
+        # break in its body both get to - what follows the loop. That merge
+        # is too early to tell when they get there, the path of the body that
+        # goes on with the loop being longer (see _merge_unexpanded): it's
+        # tried again as the paths get explored - what got to the jumpdest
+        # may have been explored further since, a merge cuts the paths there.
+        # Without it, what follows the loop is decompiled once more for each
+        # break, in the body. The oldest first: of the jumpdests the paths
+        # got to, the first one they all go through (the later ones would
+        # leave what's between them in the branches).
+        for key, (p, jd) in list(self.pending_merges.items()):
+            if (
+                not self.attached(p, root)
+                or self._merge_at(p, jd, loop_exit=True) is not None
+            ):
+                del self.pending_merges[key]
+
         unexpanded = find_nodes(root, lambda n: n.trace is None)
 
-        if not unexpanded:
-            return
+        if unexpanded:
+            self._merge_unexpanded(root, unexpanded)
 
+    def _merge_unexpanded(self, root, unexpanded):
+        """The merges of merge_branches at the jumpdests unexpanded nodes got to."""
         by_jd = {}
         for n in find_nodes(root, lambda n: True):
             by_jd.setdefault(n.jd, []).append(n)
@@ -1077,8 +1098,24 @@ class VM(EasyCopy):
 
                 tried.add((id(p), node.jd))
 
-                if self._merge_at(p, node.jd):
+                merged = self._merge_at(p, node.jd)
+                if merged:
                     break
+                if merged is None and p.is_label():
+                    # at the head of a loop: its exits, maybe (see
+                    # merge_branches)
+                    self.pending_merges[(id(p), node.jd)] = (p, node.jd)
+
+    @staticmethod
+    def attached(node, root):
+        """Whether node is still in the tree of root: not in a part thrown
+        away since (a loop explored again, a path cut by a merge)."""
+        while node is not root:
+            parent = node.prev
+            if parent == [] or not any(c is node for c in parent.next):
+                return False
+            node = parent
+        return True
 
     @staticmethod
     def below(node, p):
@@ -1137,12 +1174,17 @@ class VM(EasyCopy):
             line = self.loader.next_line(line)
         return False
 
-    def _merge_at(self, p, jd):
+    def _merge_at(self, p, jd, loop_exit=False):
         """
         Merge the paths going out of the `if` node `p` at jumpdest `jd`.
-        Returns True if it was done. (If it couldn't be done because some
-        paths were not explored yet, it will be tried again when another
-        node reaches `jd`.)
+        Returns True if it was done, None if it can't be told yet because
+        some paths were not explored yet (see merge_branches), False if not.
+
+        loop_exit: only where jd is where the loop p is the head of goes on
+        when it's left - its exit condition jumps there, and a path of the
+        body goes on with the loop without getting there. (Not a `return` in
+        the loop, which gets where the code after the loop returns: solc's
+        shared return. Each `return` is better printed where it is.)
         """
 
         TERMINAL = (
@@ -1160,6 +1202,8 @@ class VM(EasyCopy):
             return False
 
         hits = []
+        # the paths that go on with the loop p is the head of
+        continues = []
 
         def visit(start):
             """
@@ -1215,6 +1259,9 @@ class VM(EasyCopy):
 
                 op = opcode(n.trace[-1]) if n.trace else None
 
+                if op == "goto" and n.trace[-1][1] in (p, p.label):
+                    continues.append(n)
+
                 if op in TERMINAL or op == "goto":
                     continue
 
@@ -1225,10 +1272,21 @@ class VM(EasyCopy):
 
         _, _, if_true, if_false = p.trace[-1]
 
-        if visit(if_true) is not True or visit(if_false) is not True:
+        seen = [visit(if_true)]
+        if seen[0] is not False:
+            seen.append(visit(if_false))
+        if False in seen:
             return False
+        if None in seen:
+            # too early to tell (see merge_branches)
+            return None
 
         if len(hits) < 2:
+            return False
+
+        if loop_exit and not (
+            continues and any(h is if_true or h is if_false for h in hits)
+        ):
             return False
 
         for h in hits:
