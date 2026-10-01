@@ -64,6 +64,7 @@ from panoramix.core.memloc import (
     splits_mem,
     value_bits,
     width_of,
+    words,
 )
 from panoramix.core.memloc import safe_ge_zero as mem_ge_zero
 from panoramix.core.memloc import safe_le_op as mem_le_op
@@ -155,13 +156,196 @@ def simplify_trace(trace, timeout=0):
     """
     The trace, simplified. While it is, the comparisons know that a variable
     is one of the values it's set to (algebra.set_variables): a snapshot of
-    the free memory pointer is at least 0x60.
+    the free memory pointer is at least 0x60. And which of the words the
+    contract is given are small (small_words).
     """
-    algebra.set_variables(variable_values(trace))
+    values = variable_values(trace)
+    algebra.set_variables(values, small_words(trace, values))
     try:
         return _simplify_trace(trace, timeout)
     finally:
         algebra.set_variables({})
+
+
+def small_words(trace, values=None):
+    """
+    The words of the trace that are below 2**64 (see algebra.set_variables)
+    - the others the contract is given, its params, what a call returned,
+    may be anything: a param added to a pointer, unchecked, in assembly, may
+    make an address wrap around 2**256. A word of the calldata, or computed
+    from it (immutable), is small wherever it is when every execution that
+    doesn't revert goes through what shows it (spine) - solc checks params
+    before it uses them:
+    - the size of a range of memory (`mem[a len x]`), the address of one of
+      a known size (`mem[x]`): no execution pays for that much memory - not
+      a sum, that may be small only modulo 2**256;
+    - a check that it's below a number (solc's checks of the offsets and
+      lengths of params: `if x > 2**64 - 1: revert`), or below what's small
+      (an index, `require i < x`).
+    """
+    values = values or {}
+    res = set()
+
+    def small(x):
+        # (a word: not a sum, nor a product, see algebra.value_range)
+        if type(x) is not int and opcode(x) not in ("add", "mul"):
+            if immutable(x, values):
+                res.add(x)
+
+    lines, checks = [], []
+    for kind, x in spine(trace):
+        (lines if kind == "line" else checks).append(x)
+
+    for _, addr, size in find_f_list(lines, memory_ranges):
+        small(size)
+        if type(size) is int and size > 0:
+            small(addr)
+
+    for cond in checks:
+        for x, (_, hi) in cond_bounds(cond).items():
+            if hi <= algebra.MEMORY_TOP:
+                small(x)
+
+    def is_small(x):
+        # (what isn't made of what the contract is given is, see
+        # algebra._term_range)
+        if type(x) is int:
+            return 0 <= x <= algebra.MEMORY_TOP
+        return not algebra.unchecked(x, values, res)
+
+    changed = True
+    while changed:
+        changed = False
+        for cond in checks:
+            m = match(cond, (":op", ":x", ":y"))
+            if not m or m.op not in ("lt", "le", "gt", "ge"):
+                continue
+            below, above = (m.x, m.y) if m.op in ("lt", "le") else (m.y, m.x)
+            if below not in res and is_small(above):
+                small(below)
+                changed = changed or below in res
+
+    # (as they'll be once the variables set once are replaced by their values,
+    # see cleanup_vars)
+    once = {("var", name): vals[0] for name, vals in values.items() if len(vals) == 1}
+    if once:
+
+        def inline(e):
+            for _ in range(10):
+                new = replace_f(e, lambda x: once.get(x, x))
+                if new == e:
+                    break
+                e = new
+            return e
+
+        for x in list(res):
+            small(inline(x))
+    return res
+
+
+def memory_ranges(e):
+    """The range of memory e reads or writes, if it does: [range]."""
+    if (
+        opcode(e) in ("mem", "setmem")
+        and len(e) > 1
+        and opcode(e[1]) == "range"
+        and len(e[1]) == 3
+    ):
+        return [e[1]]
+    return []
+
+
+def immutable(exp, values, seen=()):
+    """
+    Whether exp is the same word wherever it is in the trace: made of
+    numbers and of the calldata, computed from them (algebra.COMPUTED), or a
+    variable set to one of these once (values, see variable_values). Not
+    what's read where it says - storage, memory, what a call returned, the
+    same every time only until it changes.
+    """
+    if type(exp) is int or exp == "calldatasize":
+        return True
+    op = opcode(exp)
+    if op in ("cd", "call.data") or op in algebra.COMPUTED:
+        return all(immutable(e, values, seen) for e in exp[1:])
+    if op == "var" and len(exp) == 2 and exp[1] not in seen:
+        vals = values.get(exp[1], [])
+        return len(vals) == 1 and immutable(vals[0], values, seen + (exp[1],))
+    return False
+
+
+# what a path that reverts ends with, and what else makes it go elsewhere
+REVERTS = ("revert", "invalid", "assert_fail")
+EXITS = ("return", "stop", "selfdestruct", "goto", "continue", "undefined")
+
+
+def reverts(trace):
+    """Whether the trace reverts (or runs an invalid opcode), on every path."""
+    if not trace:
+        return False
+    last = trace[-1]
+    if opcode(last) == "if" and len(last) == 4:
+        if not (reverts(last[2]) and reverts(last[3])):
+            return False
+    elif opcode(last) not in REVERTS:
+        return False
+    return not goes_elsewhere(trace[:-1])
+
+
+def goes_elsewhere(trace, jd=None):
+    """
+    Whether a path of the trace may end other than by reverting, or by going
+    on with what follows it: a return, a jump back - but a continue of the
+    loop of jd, the trace being its body.
+    """
+    return bool(
+        find_f_list(
+            trace,
+            lambda e: (
+                [e]
+                if opcode(e) in EXITS
+                and not (opcode(e) == "continue" and len(e) > 1 and e[1] == jd)
+                else []
+            ),
+        )
+    )
+
+
+def spine(trace):
+    """
+    What every execution of the trace that doesn't revert goes through, in
+    order: ("line", line) for a line it runs (or the condition of an if, of
+    a loop), ("cond", c) for a condition that holds from there on - where an
+    if's other branch reverts: a check. Until an execution may go elsewhere:
+    a return in a branch, a loop back...
+    """
+    for idx, line in enumerate(trace):
+        op = opcode(line)
+        if op == "if" and len(line) == 4:
+            _, cond, if_true, if_false = line
+            yield "line", cond
+            for branch, other, holds in (
+                (if_true, if_false, is_zero(cond)),
+                (if_false, if_true, cond),
+            ):
+                if reverts(branch):
+                    yield "cond", holds
+                    yield from spine(other + trace[idx + 1 :])
+                    return
+            if goes_elsewhere(if_true) or goes_elsewhere(if_false):
+                return
+        elif op == "while" and len(line) == 5:
+            # (run 0 times or more: what follows is, if it's left at its end)
+            _, cond, body, jd, _ = line
+            yield "line", cond
+            if goes_elsewhere(body, jd):
+                return
+        elif op == "label":
+            return
+        else:
+            yield "line", line
+            if op in EXITS + REVERTS:
+                return
 
 
 def variable_values(trace):
@@ -2598,7 +2782,8 @@ def memloc_right(setmem):
 def make_range(left, right):
     r_len = sub_op(right, left)
 
-    if mem_ge_zero(r_len) is False:
+    # (empty if right is before left - as words, not wrapping around 2**256)
+    if words(left, right) and mem_ge_zero(r_len) is False:
         return ("range", left, 0)
     else:
         return ("range", left, r_len)

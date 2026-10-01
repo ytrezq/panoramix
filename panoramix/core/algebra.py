@@ -184,15 +184,15 @@ def _linear(exp, bounds, masks=True, top=WORD_TOP):
         and 0 <= m.off <= 16
         and (masks is True or m.off == 0)
         and 0 <= m.shl
-        and m.off + m.size + m.shl <= 256
     ):
         # x with its lowest off bits cleared (floor32(x); ceil32(y) is
         # floor32(y + 31)), times 2**shl (8 * x, a mask moved left by 3):
         # 2**shl * (x - d), d its bits cleared, from 0 to 2**off - 1 - the
         # same d for the same mask, wherever it is (2 * ceil32(x) - ceil32(x)
-        # is ceil32(x)), when the mask doesn't cut the top of x
+        # is ceil32(x)), when the mask doesn't cut the top of x, nor the
+        # word the top of what it's moved to (32 * (i + 1), from Vyper)
         lo, hi = _value_range(m.x, bounds, top)
-        if 0 <= lo and hi < 2 ** (m.off + m.size):
+        if 0 <= lo and hi < 2 ** (m.off + m.size) and hi << m.shl <= WORD_TOP:
             t, c, (d_lo, d_hi) = _linear(m.x, bounds, masks, top)
             k = 2**m.shl
             t = {x: v * k for x, v in t.items()}
@@ -239,10 +239,16 @@ def _term_range(t, bounds, top=WORD_TOP):
     Solady's LibString.unpackTwo reads a length, is the byte it is. Nor is
     a word made of a number below 0: 8 * (32 - x % 32) as 256 + Mask(253, 0,
     3, -(x % 32)) is small only modulo 2**256, its mask is the large number
-    it is.
+    it is. Nor is one made of what the contract is given, unchecked (see
+    _of_unchecked) - unless it's a memory size itself, or checked to be
+    small (see set_variables).
     """
     lo, hi = _whole_term_range(t, bounds, top)
-    if top < WORD_TOP and lo <= top and not _of_wrapped(t, bounds):
+    if (
+        top < WORD_TOP
+        and lo <= top
+        and (t in _SMALL or not (_of_wrapped(t, bounds) or _of_unchecked(t)))
+    ):
         hi = min(hi, top)
     return lo, hi
 
@@ -262,22 +268,77 @@ def _of_wrapped(t, bounds):
     return False
 
 
+# the words a contract is given - of its calldata, of what another one
+# returned - that may be anything: a memory address or size made of them may
+# wrap around 2**256 (see _of_unchecked), unless the contract checks them
+INPUTS = ("cd", "call.data", "ext_call.return_data")
+
+
+@cached
+def _of_unchecked(t):
+    """
+    Whether t is made of a word the contract is given (see unchecked): `p +
+    160`, with p a param added to a pointer, unchecked (Solady's
+    LibBytes.load), may wrap around 2**256 - mem[159] for a p of 2**256 - 1.
+    """
+    return unchecked(t, _VARIABLES, _SMALL)
+
+
+# what a word is computed from, its value made of theirs - not what's read
+# where they say, in storage, in memory...
+COMPUTED = (
+    ("add", "mul", "div", "sdiv", "mod", "smod", "exp", "addmod", "mulmod")
+    + ("signextend", "and", "or", "xor", "not", "mask_shl", "shl", "shr", "sar")
+    + ("byte", "min", "max", "bytes", "data")
+)
+
+
+def unchecked(exp, values, small):
+    """
+    Whether exp is made of a word the contract is given (INPUTS) that isn't
+    known to be small - in small (see set_variables) - computed from it
+    (COMPUTED), or a variable set to it: one of the values it's set to
+    (values, {name: [values]}).
+    """
+    seen = set()
+
+    def f(e):
+        if type(e) is not tuple or not e or e in small:
+            return False
+        if opcode(e) in INPUTS:
+            return True
+        if opcode(e) == "var" and len(e) == 2:
+            if e[1] in values and e[1] not in seen:
+                seen.add(e[1])
+                return any(f(v) for v in values[e[1]])
+            return False
+        return opcode(e) in COMPUTED and any(f(x) for x in e[1:])
+
+    return f(exp)
+
+
 # what the variables of the trace being simplified are set to (see
 # set_variables), the ones a value of which is made of them (a loop's
-# counter), and the ones whose values are being looked at
+# counter), and the ones whose values are being looked at - and the words
+# of it known to be small
 _VARIABLES = {}
 _CYCLIC = set()
 _VISITING = set()
+_SMALL = frozenset()
 
 
-def set_variables(values):
+def set_variables(values, small=()):
     """
     {name: [values]}: what each variable of the trace being simplified is set
-    to, anywhere in it - its value is one of these (see simplify_trace). What
-    was decided with others is forgotten (clear_caches).
+    to, anywhere in it - its value is one of these (see simplify_trace). And
+    small: the words of it below 2**64 wherever they're in a memory address
+    or size, as no other word the contract is given is (see
+    simplify.small_words). What was decided with others is forgotten
+    (clear_caches).
     """
-    global _VARIABLES, _CYCLIC
+    global _VARIABLES, _CYCLIC, _SMALL
     _VARIABLES = values
+    _SMALL = frozenset(small)
     _CYCLIC = set(
         name
         for name, vals in values.items()
@@ -340,6 +401,10 @@ def _whole_term_range(t, bounds, top=WORD_TOP):
 
     if (m := match(t, ("div", ":x", ":int:c"))) and 0 < m.c:
         return 0, _word_top(m.x, bounds) // m.c
+
+    if m := match(t, ("mod", Any, ":y")):
+        # below what it's divided by (0 by 0): an index, i % array.length
+        return 0, max(_word_top(m.y, bounds, top) - 1, 0)
 
     if m := match(t, ("mask_shl", ":int:size", ":int:off", ":int:shl", ":x")):
         high_bit = _clamp_bits(m.off + m.size)
@@ -1703,6 +1768,9 @@ assert add_op(64, ("var", 4)) == ("add", 64, ("var", 4))
 
 l = ("add", 128, ("cd", ("add", 4, ("cd", 36))))
 r = ("add", 128, ("mask_shl", 251, 5, 0, ("add", 31, ("cd", ("add", 4, ("cd", 36))))))
-# (a length is below 2**64 as the memory's: then ceil32 doesn't wrap)
+# (a length below 2**64, as a memory size is: then ceil32 doesn't wrap)
+set_variables({}, {("cd", ("add", 4, ("cd", 36)))})
 assert le_op(l, r, MEMORY_TOP) is True
+set_variables({})
+assert safe_le_op(l, r, MEMORY_TOP) is None
 assert safe_le_op(l, r) is None

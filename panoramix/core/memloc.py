@@ -59,6 +59,20 @@ safe_max_op = partial(algebra.safe_max_op, top=MEMORY_TOP)
 safe_min_op = partial(algebra.safe_min_op, top=MEMORY_TOP)
 
 
+def words(*exps):
+    """
+    Whether each of exps is a memory address that doesn't wrap around
+    2**256 - the integer it's compared as, the word it is (see
+    algebra.memory_range): `p + 160` with a p that may be large, unchecked,
+    may be anywhere.
+    """
+    for e in exps:
+        lo, hi = (e, e) if type(e) is int else algebra.memory_range(e)
+        if lo < 0 or hi > algebra.WORD_TOP:
+            return False
+    return True
+
+
 def apply_mask_to_range(memloc, size, offset):
     op, range_pos, range_len = memloc
     assert op == "range"
@@ -889,6 +903,9 @@ def memloc_overwrite(memloc, split):
     m_right = add_op(m_left, m_len)
     s_right = add_op(s_left, s_len)
 
+    if not words(m_left, m_right, s_left, s_right):
+        return [memloc]
+
     if safe_le_op(m_right, s_left) is True:  # split after memory - no overlap
         return [memloc]
     if safe_le_op(s_right, m_left) is True:  # split before memory - no overlap
@@ -1057,6 +1074,9 @@ def splits_mem(memloc, split, memval, split_val=None):
 
     logger.debug(f"applying split [{s_left} (len {s_len}) {s_right}]")
     logger.debug(f"            to [{m_left} (len {m_len}) {m_right}]")
+
+    if not words(m_left, m_right, s_left, s_right):
+        return []
 
     if not safe_ge_zero(s_len):
         s_len = "undefined"
@@ -1267,7 +1287,8 @@ def fill_mem(exp, split, split_val):
     logger.debug(f"split memloc: {s_left} len {s_len} right {s_right}")
 
     if (
-        safe_ge_zero(s_len) is not True
+        not words(m_left, m_right, s_left, s_right)
+        or safe_ge_zero(s_len) is not True
         or safe_ge_zero(m_len) is not True
         or safe_le_op(s_left, m_right) is not True
         or safe_le_op(m_left, s_right) is not True
@@ -1364,6 +1385,9 @@ def range_overlaps(range1, range2):
     r1_end = add_op(r1_begin, r1_len)
     r2_end = add_op(r2_begin, r2_len)
 
+    if not words(r1_begin, r1_end, r2_begin, r2_end):
+        return None
+
     try:
         if lt_op(r2_begin, r1_begin):
             r1_begin, r1_end, r2_begin, r2_end = r2_begin, r2_end, r1_begin, r1_end
@@ -1385,6 +1409,9 @@ def range_contains(outer, inner):
 
     outer_end = add_op(outer_begin, outer_len)
     inner_end = add_op(inner_begin, inner_len)
+
+    if not words(outer_begin, outer_end, inner_begin, inner_end):
+        return None
 
     try:
         if not le_op(outer_begin, inner_begin):
