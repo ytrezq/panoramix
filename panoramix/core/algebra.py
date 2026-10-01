@@ -18,13 +18,13 @@
 import numbers
 import logging
 
-from panoramix.core.variants import extract_variables, variants
+from panoramix.core import variants
 from panoramix.matcher import Any, match
 from panoramix.utils.helpers import (
-    CACHES,
     EasyCopy,
     all_concrete,
     cached,
+    clear_caches,
     opcode,
     to_exp2,
 )
@@ -112,12 +112,17 @@ BOUNDED_SYMBOLS = {
 
 WORD_TOP = 2**256 - 1
 
+# the highest the words memory addresses and sizes are made of can be: gas
+# keeps them far below 2**256 (see memory_range)
+MEMORY_TOP = 2**64 - 1
 
-def value_range(exp, bounds=None):
+
+def value_range(exp, bounds=None, top=WORD_TOP):
     """
     (lowest, highest): what exp can be, as an integer - for any value of the
-    words it's made of (between 0 and 2**256 - 1, less for BOUNDED_SYMBOLS,
-    and for what bounds says: {x: (lowest, highest)}).
+    words it's made of (between 0 and top - 2**256 - 1, or MEMORY_TOP, see
+    memory_range - less for BOUNDED_SYMBOLS, and for what bounds says: {x:
+    (lowest, highest)}).
 
     A sum or a product (add, mul) is the integer it is here: a sum of words
     may be negative, or above 2**256. That's how the fields of a mask are
@@ -126,19 +131,31 @@ def value_range(exp, bounds=None):
     is a word.
     """
     if bounds:
-        return _value_range(exp, bounds)
-    return _cached_value_range(exp)
+        return _value_range(exp, bounds, top)
+    return _cached_value_range(exp, top)
+
+
+def memory_range(exp):
+    """
+    value_range of a memory address or size (or what's computed from them):
+    the words it's made of are below 2**64 - no execution can pay for the
+    memory of a larger one (the documented assumption of the memory model,
+    see memloc) - and it's the integer it is, not the word modulo 2**256.
+    """
+    return value_range(exp, top=MEMORY_TOP)
 
 
 @cached
-def _cached_value_range(exp):
-    return _value_range(exp, None)
+def _cached_value_range(exp, top):
+    return _value_range(exp, None, top)
 
 
-def _linear(exp, bounds, masks=True):
+def _linear(exp, bounds, masks=True, top=WORD_TOP):
     """
     exp as a sum: ({term: coefficient}, constant, (lowest, highest) of a
-    number added to them). masks: floor32(x)... as x minus a number.
+    number added to them). masks: floor32(x)... as x minus a number - or,
+    "exact", only 2 * x... (no number subtracted: two of them that are the
+    same mask stay the same term, and cancel each other).
     """
     if type(exp) in (int, bool):
         return {}, int(exp), (0, 0)
@@ -147,7 +164,7 @@ def _linear(exp, bounds, masks=True):
     if op == "add":
         terms, const, lo, hi = {}, 0, 0, 0
         for e in exp[1:]:
-            t, c, (d_lo, d_hi) = _linear(e, bounds, masks)
+            t, c, (d_lo, d_hi) = _linear(e, bounds, masks, top)
             const, lo, hi = const + c, lo + d_lo, hi + d_hi
             for k, v in t.items():
                 terms[k] = terms.get(k, 0) + v
@@ -156,7 +173,7 @@ def _linear(exp, bounds, masks=True):
     if op == "mul" and len(exp) >= 3 and type(exp[1]) is int:
         rest = exp[2] if len(exp) == 3 else ("mul",) + exp[2:]
         k = exp[1]
-        t, c, (d_lo, d_hi) = _linear(rest, bounds, masks)
+        t, c, (d_lo, d_hi) = _linear(rest, bounds, masks, top)
         d = (k * d_lo, k * d_hi) if k >= 0 else (k * d_hi, k * d_lo)
         return {x: v * k for x, v in t.items()}, c * k, d
 
@@ -165,38 +182,42 @@ def _linear(exp, bounds, masks=True):
         and (m := match(exp, ("mask_shl", ":int:size", ":int:off", ":int:shl", ":x")))
         and 0 < m.size
         and 0 <= m.off <= 16
+        and (masks is True or m.off == 0)
         and 0 <= m.shl
         and m.off + m.size + m.shl <= 256
     ):
         # x with its lowest off bits cleared (floor32(x); ceil32(y) is
         # floor32(y + 31)), times 2**shl (8 * x, a mask moved left by 3):
-        # 2**shl * (x - d), d from 0 to 2**off - 1, when the mask doesn't
-        # cut the top of x
-        lo, hi = _value_range(m.x, bounds)
+        # 2**shl * (x - d), d its bits cleared, from 0 to 2**off - 1 - the
+        # same d for the same mask, wherever it is (2 * ceil32(x) - ceil32(x)
+        # is ceil32(x)), when the mask doesn't cut the top of x
+        lo, hi = _value_range(m.x, bounds, top)
         if 0 <= lo and hi < 2 ** (m.off + m.size):
-            t, c, (d_lo, d_hi) = _linear(m.x, bounds)
+            t, c, (d_lo, d_hi) = _linear(m.x, bounds, masks, top)
             k = 2**m.shl
-            d = (k * (d_lo - (2**m.off - 1)), k * d_hi)
-            return {x: v * k for x, v in t.items()}, c * k, d
+            t = {x: v * k for x, v in t.items()}
+            if m.off:
+                t[("cleared", exp)] = t.get(("cleared", exp), 0) - k
+            return t, c * k, (k * d_lo, k * d_hi)
 
     return {exp: 1}, 0, (0, 0)
 
 
-def _value_range(exp, bounds):
+def _value_range(exp, bounds, top=WORD_TOP):
     # (the masks as numbers minus others know sums such as ceil32(x) - x,
-    # as what they are that each of them is a word: both hold)
-    lo, hi = _sum_range(exp, bounds, True)
-    lo2, hi2 = _sum_range(exp, bounds, False)
-    return max(lo, lo2), min(hi, hi2)
+    # as what they are that each of them is a word, and with only the exact
+    # ones as numbers 2 * (ceil32(x) + 32) - ceil32(x): all of them hold)
+    ranges = [_sum_range(exp, bounds, m, top) for m in (True, "exact", False)]
+    return max(r[0] for r in ranges), min(r[1] for r in ranges)
 
 
-def _sum_range(exp, bounds, masks):
-    terms, const, (lo, hi) = _linear(exp, bounds, masks)
+def _sum_range(exp, bounds, masks, top=WORD_TOP):
+    terms, const, (lo, hi) = _linear(exp, bounds, masks, top)
     lo, hi = lo + const, hi + const
     for t, c in terms.items():
         if c == 0:
             continue
-        t_lo, t_hi = _term_range(t, bounds)
+        t_lo, t_hi = _term_range(t, bounds, top)
         if c > 0:
             lo, hi = lo + c * t_lo, hi + c * t_hi
         else:
@@ -204,16 +225,94 @@ def _sum_range(exp, bounds, masks):
     return lo, hi
 
 
-def _word_top(exp, bounds):
+def _word_top(exp, bounds, top=WORD_TOP):
     """The highest value of exp as a word."""
-    lo, hi = _value_range(exp, bounds)
+    lo, hi = _value_range(exp, bounds, top)
     return hi if 0 <= lo and hi <= WORD_TOP else WORD_TOP
 
 
-def _term_range(t, bounds):
-    """value_range of what isn't a sum, nor a number times something"""
+def _term_range(t, bounds, top=WORD_TOP):
+    """
+    value_range of what isn't a sum, nor a number times something. With a
+    top below WORD_TOP (see memory_range), a term of a memory address or
+    size is below it - what it's made of isn't: the top byte of a word, as
+    Solady's LibString.unpackTwo reads a length, is the byte it is. Nor is
+    a word made of a number below 0: 8 * (32 - x % 32) as 256 + Mask(253, 0,
+    3, -(x % 32)) is small only modulo 2**256, its mask is the large number
+    it is.
+    """
+    lo, hi = _whole_term_range(t, bounds, top)
+    if top < WORD_TOP and lo <= top and not _of_wrapped(t, bounds):
+        hi = min(hi, top)
+    return lo, hi
+
+
+def _of_wrapped(t, bounds):
+    """Whether t is a word made of what may not be one: a mask of -x..."""
+    if opcode(t) == "mask_shl" and len(t) == 5:
+        args = t[4:]
+    elif opcode(t) in ("div", "mod", "and", "or", "xor", "min", "max"):
+        args = t[1:]
+    else:
+        return False
+    for a in args:
+        lo, hi = (a, a) if type(a) is int else _value_range(a, bounds)
+        if lo < 0 or hi > WORD_TOP:
+            return True
+    return False
+
+
+# what the variables of the trace being simplified are set to (see
+# set_variables), the ones a value of which is made of them (a loop's
+# counter), and the ones whose values are being looked at
+_VARIABLES = {}
+_CYCLIC = set()
+_VISITING = set()
+
+
+def set_variables(values):
+    """
+    {name: [values]}: what each variable of the trace being simplified is set
+    to, anywhere in it - its value is one of these (see simplify_trace). What
+    was decided with others is forgotten (clear_caches).
+    """
+    global _VARIABLES, _CYCLIC
+    _VARIABLES = values
+    _CYCLIC = set(
+        name
+        for name, vals in values.items()
+        if any(mentions_var(v, name) for v in vals)
+    )
+    clear_caches()
+
+
+def _whole_term_range(t, bounds, top=WORD_TOP):
     if bounds and t in bounds:
         return bounds[t]
+
+    if opcode(t) == "cleared":
+        # the bits a mask clears (see _linear)
+        return 0, 2 ** t[1][2] - 1
+
+    if (
+        opcode(t) == "var"
+        and len(t) == 2
+        and t[1] in _VARIABLES
+        and t[1] not in _CYCLIC
+        and t[1] not in _VISITING
+    ):
+        # one of the values it's set to - a snapshot of the free memory
+        # pointer is one, at least 0x60 - unless one of them is made of it (a
+        # loop's counter): then any word
+        _VISITING.add(t[1])
+        try:
+            ranges = [_value_range(v, bounds, top) for v in _VARIABLES[t[1]]]
+        finally:
+            _VISITING.discard(t[1])
+        lo, hi = min(r[0] for r in ranges), max(r[1] for r in ranges)
+        if 0 <= lo and hi <= WORD_TOP:
+            return lo, hi
+        return 0, WORD_TOP
 
     if type(t) in (int, bool):
         return int(t), int(t)
@@ -243,18 +342,23 @@ def _term_range(t, bounds):
         return 0, _word_top(m.x, bounds) // m.c
 
     if m := match(t, ("mask_shl", ":int:size", ":int:off", ":int:shl", ":x")):
-        top = _clamp_bits(m.off + m.size)
+        high_bit = _clamp_bits(m.off + m.size)
         if not may_be_wide(m.x):
-            top = min(top, _word_top(m.x, bounds).bit_length())
+            high_bit = min(high_bit, _word_top(m.x, bounds).bit_length())
         bottom = max(m.off, 0)
-        if top <= bottom:
+        if high_bit <= bottom:
             return 0, 0
-        high = 2**top - 2**bottom
+        high = 2**high_bit - 2**bottom
         high = high << _clamp_bits(m.shl) if m.shl >= 0 else high >> -m.shl
         return 0, min(high, WORD_TOP)
 
     if (m := match(t, ("storage", ":int:size", ":int:off", Any))) and m.off >= 0:
         return 0, 2 ** max(0, min(m.size, 256)) - 1
+
+    if t == ("mem", ("range", 64, 32)) and variants.FREE_MEMORY_POINTER:
+        # solidity's free memory pointer: 0x80 from the start on (0x60 before
+        # 0.4.22), and above as it's moved
+        return 0x60, WORD_TOP
 
     if op == "and" and len(t) > 1:
         return 0, min(_word_top(e, bounds) for e in t[1:])
@@ -270,6 +374,25 @@ def _term_range(t, bounds):
             return pick(r[0] for r in ranges), pick(r[1] for r in ranges)
 
     return 0, WORD_TOP
+
+
+def mentions_var(exp, name):
+    """Whether exp reads the variable, or one whose values do (see set_variables)."""
+    seen = set()
+
+    def f(e):
+        if type(e) is not tuple:
+            return False
+        if opcode(e) == "var" and len(e) == 2:
+            if e[1] == name:
+                return True
+            if e[1] in _VARIABLES and e[1] not in seen:
+                seen.add(e[1])
+                return any(f(v) for v in _VARIABLES[e[1]])
+            return False
+        return any(f(x) for x in e[1:])
+
+    return f(exp)
 
 
 def is_word(exp, bounds=None):
@@ -363,55 +486,6 @@ def calc_max(exp):
             return m
 
     return exp
-
-
-@cached
-def add_ge_zero(exp):
-    """
-    technically, it can return wrong results, e.g.:
-
-    (sub (mask 4, 4, -4, 'sth') (mask 4, 0, 'sth'))
-    for sth 11...111 == 0
-    for sth 0 == 0
-    for sth 00010011 < 0
-
-    in practice it (hopefully) doesn't happen -- need to fix "variants"
-    to deliver more variants based on masks and other expressions?
-
-    """
-
-    assert opcode(exp) == "add", exp
-    assert len(exp) > 2, exp
-
-    exp = simplify(exp)
-    if type(exp) == int:
-        return exp >= 0
-
-    if len(extract_variables(exp)) > MAX_VARIANT_VARIABLES:
-        # the number of variants is exponential in that
-        return None
-
-    seen_neg = seen_nonneg = False
-
-    for e in variants(exp):
-        v = simplify(calc_max(e))
-
-        if not all_concrete(v):
-            return None
-
-        if v >= 0:
-            seen_nonneg = True
-        else:
-            seen_neg = True
-
-        if seen_neg and seen_nonneg:
-            return None
-
-    return not seen_neg
-
-
-# 3^7 variants at most, see variants.py
-MAX_VARIANT_VARIABLES = 7
 
 
 def minus_op(exp):
@@ -603,6 +677,12 @@ def bits(exp):
         # a size, too small to overflow: the bits of the terms add up
         return add_op(*[bits(e) for e in exp[1:]])
 
+    if (m := match(exp, ("mul", ":int:k", ":x"))) and m.k < 0:
+        # a term subtracted: minus the bits of what's subtracted - not 8 times
+        # the word of a negative number (a mask of it: 256 + Mask(253, 0, 3,
+        # -x) for 32 - x, which is 256 - 8 * x only modulo 2**256)
+        return minus_op(bits(m.x if m.k == -1 else mul_op(-m.k, m.x)))
+
     return mul_op(exp, 8)
 
 
@@ -673,27 +753,32 @@ def mul_op(*args):
         ) + symbolic
 
 
-def get_sign(exp):
+def get_sign(exp, top=WORD_TOP):
+    """
+    1 if exp > 0, -1 if exp < 0, 0 if it's 0 - as the integer it is, for any
+    value of what it's made of (see value_range, and top there) - None if
+    that depends on them.
+    """
     if exp == 0:
         return 0
 
-    elif ge_zero(sub_op(exp, 1)) == True:
+    lo, hi = value_range(exp, top=top)
+    if lo > 0:
         return 1
-
-    elif ge_zero(exp) == False:
+    if hi < 0:
         return -1
-
-    else:
-        return None
-
-
-def safe_gt_zero(exp):
-    return safe_ge_zero(sub_op(exp, 1))
+    if lo == hi == 0:
+        return 0
+    return None
 
 
-def safe_ge_zero(exp):
+def safe_gt_zero(exp, top=WORD_TOP):
+    return safe_ge_zero(sub_op(exp, 1), top)
+
+
+def safe_ge_zero(exp, top=WORD_TOP):
     try:
-        return ge_zero(exp)
+        return ge_zero(exp, top)
     except CannotCompare:
         return None
 
@@ -759,69 +844,31 @@ assert to_bytes(
 ) == (("add", ("cd", ("add", 4, ("cd", 36))), ("mul", -1, ("add", 36, ("cd", 36)))), 0)
 
 
-ge_zero_cache = {}
-CACHES.append(ge_zero_cache)
+def ge_zero(exp, top=WORD_TOP):
+    """
+    True if exp >= 0, False if exp < 0 - as the integer it is, for any value
+    of what it's made of (see value_range; top: MEMORY_TOP for memory
+    addresses and sizes, see memory_range) - CannotCompare if that depends on
+    them.
 
-
-def ge_zero(exp):
-    if type(exp) == int:
-        return exp >= 0
-
-    if exp in ge_zero_cache:
-        if ge_zero_cache[exp] is None:
-            raise CannotCompare
-        return ge_zero_cache[exp]
-
-    ge_zero_cache[exp] = _ge_zero(exp)
-    if ge_zero_cache[exp] is None:
-        raise CannotCompare
-    return ge_zero_cache[exp]
-
-
-def _ge_zero(exp):
-    # returns True if exp>=0, False if exp<=0, CannotCompare if it doesn't know
-
+    The comparisons (le_op, lt_op, max_op...) are decided so, and nothing
+    else: a sign found by trying values - 0 and 2**230 for each word, as it
+    was - is of these values only (the top byte of a word is 0 in both).
+    """
     if type(exp) in (int, float):
         return exp >= 0
 
-    if type(exp) == str:
+    lo, hi = value_range(exp, top=top)
+    if lo >= 0:
         return True
-
-    if opcode(exp) == "mul":
-        counter = 1
-        for e in exp[1:]:
-            c = ge_zero(e)
-            if c == True:
-                counter *= 1
-            elif c == False:
-                counter *= -1
-
-        return counter >= 0
-
-    if opcode(exp) == "bool":
-        return True
-
-    if opcode(exp) == "mask_shl":
-        return ge_zero(exp[4])
-
-    if opcode(exp) in ["cd", "storage", "msize"]:
-        return True
-
-    if opcode(exp) == "add":
-        return add_ge_zero(exp)
-
-    if opcode(exp) == "or":
-        # the sign bit is set iff it is in one of the terms
-        return all(ge_zero(e) for e in exp[1:])
-
-    if opcode(exp) in ("var", "ext_call.return_data"):
-        return True
-
+    if hi < 0:
+        return False
     raise CannotCompare
 
 
 @cached
-def lt_op(left, right):  # left < right
+def lt_op(left, right, top=WORD_TOP):  # left < right
+    """True if left < right, False if not, CannotCompare if it depends (see ge_zero)."""
     if type(left) == int and type(right) == int:
         return left < right
 
@@ -833,71 +880,43 @@ def lt_op(left, right):  # left < right
         terms = m.max[1:]
         right = ("max",) + tuple(add_op(t, m.num) for t in terms)
 
-    if opcode(right) == "max":
-        left, right = right, left
-
     if opcode(left) == "max":
-        results = [lt_op(l, right) for l in left[1:]]
-
+        # below the largest: below all of them
+        results = [safe_lt_op(t, right, top) for t in left[1:]]
         if all(r is True for r in results):
             return True
 
         if any(r is False for r in results):
             return False
-
-        return None
-
-    if (
-        (ml := match(left, ("add", Any, ("var", ":num"))))
-        and (mr := match(right, ("add", Any, ("var", ":num"))))
-        and ml.num != mr.num
-    ):
         raise CannotCompare
 
-    sleft = str(left)
-    sright = str(right)
-
-    if opcode(left) == "var" and str(left) not in sright:
-        raise CannotCompare
-
-    if opcode(right) == "var" and str(right) not in sleft:
-        raise CannotCompare
-
-    if type(right) == int and (m := match(left, ("add", ":int:num", ("var", Any)))):
-        if right >= m.num:
-            return False
-        else:
-            raise CannotCompare
-
-    if type(left) == int and (m := match(right, ("add", ":int:num", ("var", Any)))):
-        if left < m.num:
+    if opcode(right) == "max":
+        # below the largest: below one of them
+        results = [safe_lt_op(left, t, top) for t in right[1:]]
+        if any(r is True for r in results):
             return True
-        else:
-            raise CannotCompare
-
-    return lt2(left, right)
-
-
-def lt2(left, right):
-    subbed = sub_op(right, left)
-
-    sgn = get_sign(subbed)
-    if sgn is None:
+        if all(r is False for r in results):
+            return False
         raise CannotCompare
 
-    return sgn > 0
+    lo, hi = value_range(sub_op(right, left), top=top)
+    if lo > 0:
+        return True
+    if hi <= 0:
+        return False
+    raise CannotCompare
 
 
-def safe_lt_op(left, right):
+def safe_lt_op(left, right, top=WORD_TOP):
     try:
-        return lt_op(left, right)
+        return lt_op(left, right, top)
     except CannotCompare:
         return None
 
 
-def safe_le_op(left, right):
+def safe_le_op(left, right, top=WORD_TOP):
     try:
-        return le_op(left, right)
+        return le_op(left, right, top)
     except CannotCompare:
         return None
 
@@ -917,10 +936,8 @@ def simplify_max(exp):
 
 
 @cached
-def le_op(left, right):  # left <= right
-    #    right = add_op(1, right)
-    #    return lt_op(left, right)
-
+def le_op(left, right, top=WORD_TOP):  # left <= right
+    """True if left <= right, False if not, CannotCompare if it depends (see ge_zero)."""
     if opcode(left) == "max":
         left = max_to_add(left)
 
@@ -930,27 +947,25 @@ def le_op(left, right):  # left <= right
     if type(left) in (int, float) and type(right) in (int, float):
         return left <= right
 
-    subbed = sub_op(right, left)
-
-    return ge_zero(subbed)
+    return ge_zero(sub_op(right, left), top)
 
 
-def max_op(left, right):
+def max_op(left, right, top=WORD_TOP):
     try:
-        if le_op(left, right):
+        if le_op(left, right, top):
             return right
         else:
             return left
     except CannotCompare:
-        if le_op(right, left):
+        if le_op(right, left, top):
             return left
         else:
             return right
 
 
-def safe_max_op(left, right):
+def safe_max_op(left, right, top=WORD_TOP):
     try:
-        return max_op(left, right)
+        return max_op(left, right, top)
     except CannotCompare:
         return None
 
@@ -1012,21 +1027,21 @@ def div_op(a, b):
         return a // b
 
 
-def safe_min_op(left, right):
+def safe_min_op(left, right, top=WORD_TOP):
     try:
-        return min_op(left, right)
+        return min_op(left, right, top)
     except CannotCompare:
         return None
 
 
-def min_op(left, right):
+def min_op(left, right, top=WORD_TOP):
     try:
-        if le_op(left, right):
+        if le_op(left, right, top):
             return left
         else:
             return right
     except CannotCompare:
-        if le_op(right, left):
+        if le_op(right, left, top):
             return right
         else:
             return left
@@ -1688,4 +1703,6 @@ assert add_op(64, ("var", 4)) == ("add", 64, ("var", 4))
 
 l = ("add", 128, ("cd", ("add", 4, ("cd", 36))))
 r = ("add", 128, ("mask_shl", 251, 5, 0, ("add", 31, ("cd", ("add", 4, ("cd", 36))))))
-assert le_op(l, r) == True, le_op(r, l)
+# (a length is below 2**64 as the memory's: then ceil32 doesn't wrap)
+assert le_op(l, r, MEMORY_TOP) is True
+assert safe_le_op(l, r) is None

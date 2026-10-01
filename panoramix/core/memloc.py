@@ -1,5 +1,6 @@
 import logging
 import sys
+from functools import partial
 
 from panoramix.matcher import Any, match
 from panoramix.utils.helpers import (
@@ -14,7 +15,6 @@ from panoramix.utils.helpers import (
 from panoramix.core.algebra import (
     BOUNDED_SYMBOLS,
     CannotCompare,
-    add_ge_zero,
     add_op,
     all_concrete,
     apply_mask,
@@ -23,24 +23,12 @@ from panoramix.core.algebra import (
     calc_max,
     divisible_bytes,
     flatten_adds,
-    ge_zero,
-    get_sign,
-    le_op,
-    lt_op,
     mask_op,
-    max_op,
     max_to_add,
-    min_op,
     minus_op,
     mul_op,
     neg_mask_op,
     or_op,
-    safe_ge_zero,
-    safe_gt_zero,
-    safe_le_op,
-    safe_lt_op,
-    safe_max_op,
-    safe_min_op,
     simplify,
     simplify_max,
     sub_op,
@@ -48,9 +36,27 @@ from panoramix.core.algebra import (
     try_add,
     value_range,
 )
+from panoramix.core import algebra
+from panoramix.core.algebra import MEMORY_TOP
 from panoramix.core.masks import find_mask
 
 logger = logging.getLogger(__name__)
+
+
+# The comparisons of the memory model: of addresses and sizes, whose words are
+# below 2**64 - gas keeps them there (see algebra.memory_range)
+ge_zero = partial(algebra.ge_zero, top=MEMORY_TOP)
+get_sign = partial(algebra.get_sign, top=MEMORY_TOP)
+le_op = partial(algebra.le_op, top=MEMORY_TOP)
+lt_op = partial(algebra.lt_op, top=MEMORY_TOP)
+max_op = partial(algebra.max_op, top=MEMORY_TOP)
+min_op = partial(algebra.min_op, top=MEMORY_TOP)
+safe_ge_zero = partial(algebra.safe_ge_zero, top=MEMORY_TOP)
+safe_gt_zero = partial(algebra.safe_gt_zero, top=MEMORY_TOP)
+safe_le_op = partial(algebra.safe_le_op, top=MEMORY_TOP)
+safe_lt_op = partial(algebra.safe_lt_op, top=MEMORY_TOP)
+safe_max_op = partial(algebra.safe_max_op, top=MEMORY_TOP)
+safe_min_op = partial(algebra.safe_min_op, top=MEMORY_TOP)
 
 
 def apply_mask_to_range(memloc, size, offset):
@@ -1124,7 +1130,14 @@ def splits_mem(memloc, split, memval, split_val=None):
         if safe_ge_zero(center_len) and center_len != 0 and center_val is not None:
             res.append((center_range, center_val))
 
-    if safe_ge_zero(right_len) is True and right_len != 0 and val_right is not None:
+    if (
+        safe_ge_zero(right_len) is True
+        and right_len != 0
+        and val_right is not None
+        # (the split ends in the memory, not before it: then all of it is
+        # left, not a part from the split's end on)
+        and safe_le_op(m_left, right) is True
+    ):
         res.append((("range", right, right_len), val_right))
 
     return res
@@ -1254,13 +1267,16 @@ def fill_mem(exp, split, split_val):
     logger.debug(f"split memloc: {s_left} len {s_len} right {s_right}")
 
     if (
-        safe_le_op(m_right, s_left) is not False
-    ):  # if the split is before memory, or we can't compare - not replacing
-        logger.debug("split before memory or can't compare - not replacing")
-        return exp
-
-    if safe_le_op(s_right, m_left) is not False:  # -,,- after memory
-        logger.debug("split after memory or can't compare - not replacing")
+        safe_ge_zero(s_len) is not True
+        or safe_ge_zero(m_len) is not True
+        or safe_le_op(s_left, m_right) is not True
+        or safe_le_op(m_left, s_right) is not True
+    ):
+        # the split may be all after the memory read, or all before it (or
+        # it's not known): not replacing. Else the read is the memory before
+        # the split, the split's part, and the memory after it - each of a
+        # size >= 0, maybe 0 (a read of a length that may be 0)
+        logger.debug("split may be before or after memory - not replacing")
         return exp
 
     left = safe_max_op(s_left, m_left)
@@ -1270,6 +1286,10 @@ def fill_mem(exp, split, split_val):
 
     if left is None or right is None:
         return exp  # if we can't figure out which one is smaller/larger, we're not replacing
+
+    if safe_le_op(right, left) is True:
+        # the read has none of it
+        return exp
 
     memloc, memloc_max = replace_max_with_MAX(memloc)
     split, split_max = replace_max_with_MAX(split)
@@ -1298,12 +1318,10 @@ def fill_mem(exp, split, split_val):
 
     res = []
 
-    if safe_gt_zero(sizeof(res_left)) is True:
-        logger.debug("size of left untouched > 0, adding to output")
-        res.append(res_left)
-
-    elif safe_gt_zero(sizeof(res_left)) is None:
-        logger.debug("we don't know if left size > 0, aborting")
+    if safe_ge_zero(sizeof(res_left)) is True:
+        if sizeof(res_left) != 0:
+            res.append(res_left)
+    else:
         return exp
 
     center_in_start = sub_op(left, s_left)
@@ -1328,7 +1346,7 @@ def fill_mem(exp, split, split_val):
     if safe_ge_zero(sizeof(res_right)) is True:
         if sizeof(res_right) != 0:
             res.append(res_right)
-    elif safe_ge_zero(sizeof(res_right)) is None:
+    else:
         return exp
 
     assert None not in res

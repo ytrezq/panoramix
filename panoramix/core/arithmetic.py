@@ -408,7 +408,7 @@ def eval_bool(exp, known_true=True, symbolic=True):
             return False
 
         try:  # a > b iff b < a iff b+1 <= a
-            le = algebra.lt_op(algebra.add_op(left, 1), right, 1)
+            le = algebra.lt_op(algebra.add_op(left, 1), right)
             logger.debug("le %s %s %s", le, left, right)
 
             if le == True:

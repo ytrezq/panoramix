@@ -6,7 +6,6 @@ from time import gmtime, strftime
 import panoramix.core.arithmetic as arithmetic
 from panoramix.core.algebra import (
     _max_op,
-    add_ge_zero,
     add_op,
     apply_mask,
     apply_mask_to_storage,

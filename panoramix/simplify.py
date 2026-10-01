@@ -4,10 +4,10 @@ import logging
 import sys
 from copy import copy
 
+import panoramix.core.algebra as algebra
 import panoramix.core.arithmetic as arithmetic
 from panoramix.core.algebra import (
     _max_op,
-    add_ge_zero,
     add_op,
     all_concrete,
     apply_mask,
@@ -31,7 +31,6 @@ from panoramix.core.algebra import (
     mul_op,
     neg_mask_op,
     or_op,
-    safe_ge_zero,
     safe_le_op,
     safe_max_op,
     safe_min_op,
@@ -66,6 +65,8 @@ from panoramix.core.memloc import (
     value_bits,
     width_of,
 )
+from panoramix.core.memloc import safe_ge_zero as mem_ge_zero
+from panoramix.core.memloc import safe_le_op as mem_le_op
 from panoramix.matcher import Any, match
 from panoramix.prettify import (
     explain,
@@ -83,6 +84,7 @@ from panoramix.utils.helpers import (
     find_f_list,
     find_f_set,
     find_op_list,
+    is_array,
     opcode,
     replace,
     replace_f,
@@ -150,6 +152,29 @@ logger = logging.getLogger(__name__)
 
 
 def simplify_trace(trace, timeout=0):
+    """
+    The trace, simplified. While it is, the comparisons know that a variable
+    is one of the values it's set to (algebra.set_variables): a snapshot of
+    the free memory pointer is at least 0x60.
+    """
+    algebra.set_variables(variable_values(trace))
+    try:
+        return _simplify_trace(trace, timeout)
+    finally:
+        algebra.set_variables({})
+
+
+def variable_values(trace):
+    """{name: [values]}: what each variable is set to in the trace, anywhere."""
+    res = {}
+    for sv in find_f_list(
+        trace, lambda e: [e] if opcode(e) == "setvar" and len(e) == 3 else []
+    ):
+        res.setdefault(sv[1], []).append(sv[2])
+    return res
+
+
+def _simplify_trace(trace, timeout=0):
     time_start = time.monotonic()
 
     def should_quit():
@@ -301,7 +326,7 @@ def simplify_bytes(exp):
     _, size, val = exp
     val = simplify_exp(val)
 
-    if (m := match(val, ("bytes", ":inner_size", ":inner"))) and safe_le_op(
+    if (m := match(val, ("bytes", ":inner_size", ":inner"))) and mem_le_op(
         m.inner_size, size
     ) is True:
         val = m.inner
@@ -316,7 +341,8 @@ def data_elements(res):
     """
     The elements of a data without "bytes" when they're as wide as their
     value, zeroes followed by a value merged into it, and zeroes into one -
-    and without the ones of no bytes (a range of length 0).
+    and without the ones of no bytes (a range of length 0). Two parts of the
+    same bytes, one where the other ends, are one.
     """
     res = [
         e[2] if opcode(e) == "bytes" and e[2] != 0 and implicit(e[2], bits(e[1])) else e
@@ -334,6 +360,9 @@ def data_elements(res):
 
     merged = []
     for e in res:
+        if merged and (joined := join_slices(merged[-1], e)) is not None:
+            merged[-1] = joined
+            continue
         if merged and (z := zeroes(merged[-1])) is not None:
             w = sizeof(e)
             if zeroes(e) is not None:
@@ -360,6 +389,29 @@ def data_elements(res):
         e[2] if opcode(e) == "bytes" and implicit(e[2], bits(e[1])) else e
         for e in merged
     ]
+
+
+def join_slices(a, b):
+    """
+    The bytes a then b are, where they're the same bytes and b starts where a
+    ends: `ext_call.return_data[0 len n], ext_call.return_data[n len 32 - n]`
+    is `ext_call.return_data[0 len 32]`. None otherwise.
+    """
+    if (ma := match(a, ("mem", ("range", ":s1", ":n1")))) and (
+        mb := match(b, ("mem", ("range", ":s2", ":n2")))
+    ):
+        if sub_op(mb.s2, add_op(ma.s1, ma.n1)) == 0:
+            return ("mem", ("range", ma.s1, add_op(ma.n1, mb.n2)))
+        return None
+    if (
+        opcode(a) == opcode(b)
+        and is_array(opcode(a))
+        and len(a) == 3
+        and len(b) == 3
+        and sub_op(b[1], add_op(a[1], a[2])) == 0
+    ):
+        return (a[0], a[1], add_op(a[2], b[2]))
+    return None
 
 
 @cached
@@ -593,7 +645,7 @@ def simplify_exp(exp):
     if m := match(
         exp, ("mask_shl", ":size", 0, 0, ("mem", ("range", ":mem_loc", ":mem_size")))
     ):
-        if divisible_bytes(m.size) and safe_le_op(to_bytes(m.size)[0], m.mem_size):
+        if divisible_bytes(m.size) and mem_le_op(to_bytes(m.size)[0], m.mem_size):
             return (
                 "mem",
                 apply_mask_to_range(("range", m.mem_loc, m.mem_size), m.size, 0),
@@ -613,7 +665,7 @@ def simplify_exp(exp):
     ) and m.shl == minus_op(m.off):
         if (
             divisible_bytes(m.size)
-            and safe_le_op(to_bytes(m.size)[0], m.mem_size)
+            and mem_le_op(to_bytes(m.size)[0], m.mem_size)
             and divisible_bytes(m.off)
         ):
             return (
@@ -830,7 +882,7 @@ def cleanup_mask_data(exp):
             return exp
 
         last = val[-1]
-        if sizeof(last) is not None and safe_le_op(sizeof(last), offset):
+        if sizeof(last) is not None and mem_le_op(sizeof(last), offset):
             offset = sub_op(offset, sizeof(last))
             shl = add_op(shl, sizeof(last))
             if len(val) == 3:
@@ -862,7 +914,7 @@ def cleanup_mask_data(exp):
                 return exp
             sum_sizes = simplify_exp(add_op(sum_sizes, sizeof(last)))
             res.insert(0, last)
-            if safe_le_op(total_size, sum_sizes):
+            if mem_le_op(total_size, sum_sizes):
                 return exp[:4] + (("data",) + tuple(res),)
 
         return exp
@@ -2546,7 +2598,7 @@ def memloc_right(setmem):
 def make_range(left, right):
     r_len = sub_op(right, left)
 
-    if safe_ge_zero(r_len) is False:
+    if mem_ge_zero(r_len) is False:
         return ("range", left, 0)
     else:
         return ("range", left, r_len)
@@ -2882,11 +2934,11 @@ def parse_counters(line):
     # num_loops is the number of iterations only if the counter doesn't start
     # beyond where it stops - otherwise there are none, and it's negative
     if cond[0] == "le" and counter_step > 0:
-        starts_before_stop = safe_le_op(
+        starts_before_stop = mem_le_op(
             counter_start, add_op(counter_stop, counter_step)
         )
     elif cond[0] == "ge" and counter_step < 0:
-        starts_before_stop = safe_le_op(
+        starts_before_stop = mem_le_op(
             add_op(counter_stop, counter_step), counter_start
         )
     else:
