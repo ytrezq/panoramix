@@ -298,6 +298,11 @@ def add_breaks(path):
     return path + [("break",)]
 
 
+def breaks(path):
+    """Whether path ends with a break (see add_breaks)."""
+    return bool(path) and opcode(path[-1]) == "break"
+
+
 def continues_from_inside(path, jd):
     """Whether a loop inside path continues the loop jd."""
 
@@ -406,6 +411,19 @@ def pprint_logic(exp, indent=2, loops=()):
             )
 
             for l in pprint_logic(exp[3], indent, loops):
+                yield l
+
+        elif if_false and (breaks(if_true) or breaks(if_false) and if_true):
+            # a branch that leaves the loop (see add_breaks): the other one
+            # follows the if rather than being its else
+            if not breaks(if_true):
+                cond, if_true, if_false = is_zero(cond), if_false, if_true
+            yield " " * indent + "if " + prettify(
+                cond, add_color=True, parentheses=False, rem_bool=True
+            ) + ":"
+            for l in pprint_logic(if_true, indent + INDENT_LEN, loops):
+                yield l
+            for l in pprint_logic(if_false, indent, loops):
                 yield l
 
         else:
