@@ -1916,15 +1916,19 @@ class VM(EasyCopy):
             call_pos = stack.pop()
             data_len = stack.pop()
 
+            binary = self.loader.binary
             if (
                 (type(call_pos), type(data_len)) == (int, int)
-                and call_pos + data_len <= len(self.loader.binary)
-                and data_len <= MAX_CODECOPY_SIZE
+                and 0 <= call_pos
+                and 0 <= data_len <= MAX_CODECOPY_SIZE
             ):
+                # the bytes of the code, and zeroes past its end: solc fills a
+                # new array with them, copying from codesize
                 res = 0
-                for i in range(call_pos, call_pos + data_len):
+                for i in range(call_pos, min(call_pos + data_len, len(binary))):
                     res = res << 8
-                    res += self.loader.binary[i]
+                    res += binary[i]
+                res <<= 8 * max(0, call_pos + data_len - max(call_pos, len(binary)))
                 trace(
                     ("setmem", ("range", mem_pos, data_len), res)
                 )  # ('bytes', data_len, res)))
