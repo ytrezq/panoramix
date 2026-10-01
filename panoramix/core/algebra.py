@@ -130,9 +130,7 @@ def value_range(exp, bounds=None, top=WORD_TOP):
     one of them only when it's the same integer (see shl_op). Anything else
     is a word.
     """
-    if bounds:
-        return _value_range(exp, bounds, top)
-    return _cached_value_range(exp, top)
+    return _value_range(exp, bounds, top)
 
 
 def memory_range(exp):
@@ -147,7 +145,7 @@ def memory_range(exp):
 
 @cached
 def _cached_value_range(exp, top):
-    return _value_range(exp, None, top)
+    return _value_range_of(exp, None, top)
 
 
 def _linear(exp, bounds, masks=True, top=WORD_TOP):
@@ -204,6 +202,15 @@ def _linear(exp, bounds, masks=True, top=WORD_TOP):
 
 
 def _value_range(exp, bounds, top=WORD_TOP):
+    # (what's known of an expression is known of it wherever it is: each of
+    # its words, each of its terms is looked at once - not again in each of
+    # the passes of each sum it's in, an exponential number of times)
+    if not bounds:
+        return _cached_value_range(exp, top)
+    return _value_range_of(exp, bounds, top)
+
+
+def _value_range_of(exp, bounds, top=WORD_TOP):
     # (the masks as numbers minus others know sums such as ceil32(x) - x,
     # as what they are that each of them is a word, and with only the exact
     # ones as numbers 2 * (ceil32(x) + 32) - ceil32(x): all of them hold)
@@ -232,6 +239,17 @@ def _word_top(exp, bounds, top=WORD_TOP):
 
 
 def _term_range(t, bounds, top=WORD_TOP):
+    if not bounds:
+        return _cached_term_range(t, top)
+    return _term_range_of(t, bounds, top)
+
+
+@cached
+def _cached_term_range(t, top):
+    return _term_range_of(t, None, top)
+
+
+def _term_range_of(t, bounds, top=WORD_TOP):
     """
     value_range of what isn't a sum, nor a number times something. With a
     top below WORD_TOP (see memory_range), a term of a memory address or
