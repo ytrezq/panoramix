@@ -49,7 +49,7 @@ from panoramix.utils.helpers import (
     replace_f_stop,
 )
 
-from .loader import apply_entry, entry_known, selector_test
+from .loader import apply_entry, entry_known, is_dispatch, selector_test
 from .stack import Stack, fold_stacks, stack_vars
 
 logger = logging.getLogger(__name__)
@@ -75,6 +75,23 @@ logger = logging.getLogger(__name__)
 
 def mem_load(pos, size=32):
     return ("mem", ("range", pos, size))
+
+
+def in_dispatcher(node):
+    """
+    Whether every branch on the way to node is one of the dispatcher's: on the
+    selector or on calldatasize (see loader.is_dispatch) - not one of a
+    function's body.
+    """
+    res = getattr(node, "dispatch", None)
+    if res is None:
+        # (prev is the node it's reached from, once it's set)
+        parent = node.prev if isinstance(node.prev, Node) else None
+        res = (parent is None or in_dispatcher(parent)) and (
+            node.condition is True or is_dispatch(node.condition)
+        )
+        node.dispatch = res
+    return res
 
 
 def find_nodes(node, f):
@@ -554,10 +571,11 @@ class Node:
             return [("undefined", "decompilation didn't finish")]
 
         if self.vm.just_fdests and (
-            self.safe and self.vm.lines.get(self.start, (None, None))[1] == "jumpdest"
+            self.vm.lines.get(self.start, (None, None))[1] == "jumpdest"
         ):
             # the loader looks for these to find the default function, and
-            # the stack it starts with
+            # the stack it starts with: where the dispatcher falls through to
+            # it, and where it jumps to it (solc's `calldatasize < 4`)
             begin = [("jd", str(self.jd[0]), tuple(self.stack))]
         elif self.vm.just_fdests and self.trace != [("revert", None)]:
             t = self.trace[0]
@@ -859,6 +877,17 @@ class VM(EasyCopy):
 
     def expand_trace(self, root):
         nodes = find_nodes(root, lambda n: n.trace is None)
+
+        if self.just_fdests:
+            # the dispatcher first, a function's body with the nodes left once
+            # it's done: the body of the default function, which takes the
+            # paths no selector matches, branches as it goes - explored with
+            # it, it took all of them (MAX_FDESTS_NODE_COUNT), and the
+            # functions past where the dispatcher was cut were left to the
+            # default function, as its ifs on the selector
+            dispatch = [n for n in nodes if in_dispatcher(n)]
+            if dispatch:
+                nodes = dispatch
 
         for node in nodes:
             if self.should_quit():

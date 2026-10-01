@@ -167,7 +167,13 @@ def _decompile_with_loader(loader, only_func_name=None) -> Decompilation:
             )
             def dec():
                 logger.info(" -> Interpreting EVM on function...")
-                known = loader.fallback_known if hash == "_fallback" else ()
+                # (the default function where it's all of the dispatcher, not
+                # where it starts: what's known there is what its entries,
+                # each of the paths to it, have in common - see loader.entry)
+                if hash == "_fallback" and target == 0:
+                    known = loader.fallback_known
+                else:
+                    known = ()
                 trace = VM(loader).run(
                     target,
                     stack=stack,
