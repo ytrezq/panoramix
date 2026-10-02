@@ -2,6 +2,7 @@ import logging
 
 import panoramix.folder as folder
 import panoramix.storage as storage
+from panoramix.postprocess import short_circuits
 from panoramix.matcher import match
 from panoramix.prettify import (
     fix_widths,
@@ -124,6 +125,7 @@ class Contract:
             func.ast = self.make_ast(func.trace)
 
     def make_ast(self, trace):
+        trace = short_circuits(trace)
         trace = folder.fold(trace)
         trace = fix_widths(trace)
 

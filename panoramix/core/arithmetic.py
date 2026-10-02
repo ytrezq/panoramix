@@ -219,6 +219,14 @@ def is_bool(exp):
     if op in ("and", "or", "xor"):
         return all(is_bool(e) for e in exp[1:])
 
+    if op == "lor":
+        # python's or: one of its operands
+        return all(is_bool(e) for e in exp[1:])
+
+    if op == "land":
+        # python's and: its last operand, or one that is 0
+        return is_bool(exp[-1])
+
     if m := match(exp, ("mask_shl", 1, ":int:off", ":int:shl", Any)):
         # a single bit, moved down to the lowest one
         return m.off + m.shl == 0

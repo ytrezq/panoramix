@@ -1795,6 +1795,21 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
     if m := match(exp, ("exp", ":a", ":n")):
         return wrap(operand(m.a, POW + 1) + "**" + operand(m.n, POW), POW)
 
+    if opcode(exp) in ("land", "lor"):
+        # python's and / or (see postprocess.short_circuits): the operand that
+        # decides - printed as the value it is where it may be the one given
+        # (the last of an and, any of an or), unless only its truth counts
+        op_form = " and " if opcode(exp) == "land" else " or "
+        prec = OPERATOR_PRECEDENCE[op_form]
+        if add_color:
+            op_form = COLOR_BOLD + op_form + ENDC
+        last = len(exp) - 2
+        parts = [
+            operand(e, prec, rem_bool=rem_bool or (opcode(exp) == "land" and i < last))
+            for i, e in enumerate(exp[1:])
+        ]
+        return wrap(op_form.join(parts), prec)
+
     if opcode(exp) in opcode_to_arithm:
         if opcode(exp) in ["shl", "shr"]:
             exp = exp[0], exp[2], exp[1]
