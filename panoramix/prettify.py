@@ -1830,16 +1830,29 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
 
             return ("and",) + res
 
-        if opcode(exp) in ("and", "or") and all(is_bool(e) for e in exp[1:]):
-            # of truth values: the logical ones, whose operands are true
-            # when they aren't 0 (bool(x) can be x)
+        if opcode(exp) in ("and", "or") and (
+            all(is_bool(e) for e in exp[1:]) or (rem_bool and opcode(exp) == "or")
+        ):
+            # python's and / or: of truth values, they're the bitwise ones;
+            # of any values, an or is true where the bitwise one is
             if opcode(exp) == "and":
                 exp = fold_ands(exp)
             op_form = " and " if opcode(exp) == "and" else " or "
             prec = OPERATOR_PRECEDENCE[op_form]
             if add_color:
                 op_form = COLOR_BOLD + op_form + ENDC
-            parts = [operand(e, prec + 1, rem_bool=True) for e in exp[1:]]
+            # where its value counts, not only its truth, they give the
+            # operand that decides: the last of an and, any of an or, which
+            # is then printed as the 0 or 1 it is (bool(x), not x)
+            last = len(exp) - 2
+            parts = [
+                operand(
+                    e,
+                    prec + 1,
+                    rem_bool=rem_bool or (opcode(exp) == "and" and i < last),
+                )
+                for i, e in enumerate(exp[1:])
+            ]
         else:
             parts = [operand(exp[1], first_prec)] + [
                 operand(e, rest_prec) for e in exp[2:]
@@ -1868,7 +1881,8 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
             else:
                 return comparison(m.left, " != ", m.right)
 
-        return wrap("not " + operand(val, NOT), NOT)
+        # (of its operand, only the truth counts: not bool(x) is not x)
+        return wrap("not " + operand(val, NOT, rem_bool=True), NOT)
 
     return str(exp)
 

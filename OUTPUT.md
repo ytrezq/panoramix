@@ -36,8 +36,10 @@ comparisons, `|`, `^`, `&`, `<< >>`, `+ -`, `* / %`, unary `-`, `**`.
 - `+ - * / % **` are arithmetic (`**` the power), `<< >>` shifts (by 256 or
   more: 0).
 - `& | ^ ~` are bitwise (`^` is xor, `~` not).
-- `and`, `or`, `not` are logical: they're only printed between truth values
-  (0 or 1), and give 0 or 1. A comparison gives 0 or 1.
+- `and`, `or`, `not` are python's, of any values: `a and b` is `b` where `a`
+  isn't 0, else `a`; `a or b` is `a` where it isn't 0, else `b` (`b` is
+  evaluated only then); `not a` is 1 where `a` is 0, else 0. A comparison
+  gives 0 or 1.
 - A condition (`if`, `while`, `require`) holds when its value isn't 0;
   `a != b` is also how a xor tested for truth is printed.
 
