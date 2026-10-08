@@ -248,7 +248,7 @@ def comp_bool(left, right):
 
 
 def is_zero(exp):
-    if type(exp) == int:
+    if type(exp) in (int, bool):
         # (as a word)
         return exp % 2**256 == 0
 
@@ -267,17 +267,33 @@ def is_zero(exp):
         return is_zero(exp[1])
 
     if opcode(exp) == "or":
+        # all of them are 0 - that of a number is a python bool (see above),
+        # not something to put in an expression: a number that isn't 0
+        # decides it, one that is adds nothing
         res = []
         for r in exp[1:]:
-            res.append(is_zero(r))
+            z = is_zero(r)
+            if z is False:
+                return False
+            if z is not True:
+                res.append(z)
+        if len(res) < 2:
+            return res[0] if res else True
         return and_op(*res)
 
     if opcode(exp) == "and" and all(is_bool(r) for r in exp[1:]):
         # of truth values: one of them is false. Not of other numbers - of
-        # 1 and 2, neither of which is 0, `and` is 0.
+        # 1 and 2, neither of which is 0, `and` is 0. (Likewise, a number
+        # decides it or adds nothing.)
         res = []
         for r in exp[1:]:
-            res.append(is_zero(r))
+            z = is_zero(r)
+            if z is True:
+                return True
+            if z is not False:
+                res.append(z)
+        if not res:
+            return False
         return algebra.or_op(*res)
 
     if opcode(exp) == "le":
