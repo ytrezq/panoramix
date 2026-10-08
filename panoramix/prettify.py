@@ -736,7 +736,6 @@ def pretty_line(r, add_color=True):
 
         if m := match(val, ("add", ":int:v", idx)):
             v = m.v
-            assert v != 0
 
             if v == -1:
                 yield prettify(idx, add_color=add_color) + "--"
