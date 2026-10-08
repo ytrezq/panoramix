@@ -136,11 +136,10 @@ class Stack(EasyCopy):
         res = []
 
         for el in self.stack:
-            if (
-                type(el) == int
-                and el in jump_dests
-                or (type(el) == int and el > 2000 and el < 5000)
-            ):
+            # (the places the code may jump back to: not any number - one
+            # between 2000 and 5000 made a loop over a memory pointer there
+            # unrolled until the pointer got past 5000)
+            if type(el) == int and el in jump_dests:
                 res.append(str(el))
 
         return res
