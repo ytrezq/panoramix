@@ -332,14 +332,24 @@ class Function(EasyCopy):
             # good testing: solidstamp, auditContract
             # try to find all the references to parameters and guess their types
 
-            def f(exp):
-                if match(exp, ("mask_shl", Any, Any, Any, ("cd", Any))) or match(
-                    exp, ("cd", Any)
-                ):
-                    return [exp]
-                return []
+            def reads(exp, res):
+                # (a mask of a read is that read - and not, as find_f_list
+                # would have it, the read inside it as well, unmasked)
+                if match(exp, ("mask_shl", Any, Any, Any, ("cd", Any))):
+                    res.append(exp)
+                    rest = exp[1:4] + exp[4][1:]
+                elif match(exp, ("cd", Any)):
+                    res.append(exp)
+                    rest = exp[1:]
+                elif type(exp) in (list, tuple):
+                    rest = exp
+                else:
+                    return res
+                for e in rest:
+                    reads(e, res)
+                return res
 
-            occurences = find_f_list(self.trace, f)
+            occurences = reads(self.trace, [])
 
             # the params (by their position in the calldata) and the sizes of
             # the masks applied to them, None when used as they are
@@ -382,9 +392,11 @@ class Function(EasyCopy):
                     sizes[idx] = -1
                 elif valid := self.validation(idx):
                     sizes[idx] = valid
-                elif None not in idx_sizes:
+                elif None not in idx_sizes and all(
+                    type(s) is int and 0 < s <= 256 for s in idx_sizes
+                ):
                     # masked everywhere, as the compilers did before
-                    # validating the params
+                    # validating the params (by masks of known sizes)
                     sizes[idx] = min(idx_sizes)
                 else:
                     sizes[idx] = 256
