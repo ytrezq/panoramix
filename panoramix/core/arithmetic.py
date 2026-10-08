@@ -595,7 +595,7 @@ def sar(shift_length, value):
     value = unsigned_to_signed(value)
 
     if shift_length >= 256:
-        return 0 if value >= 0 else UINT_255_NEGATIVE_ONE
+        return 0 if value >= 0 else UINT_256_MAX
     else:
         return (value >> shift_length) & UINT_256_MAX
 
