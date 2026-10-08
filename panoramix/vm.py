@@ -439,13 +439,23 @@ def entry_memory(entries):
     the dispatcher to it wrote, in a memory of zeroes (see loader.entry_paths).
     """
     res = None
+    every = set()
     for entry in entries or ():
         known = (("memory_fresh",),)
         for item in entry:
             if opcode(item) == "setmem":
                 known = write_memory(known, item[1], item[2])
+        every |= set(known)
         res = set(known) if res is None else res & set(known)
-    return tuple(sorted(res, key=str)) if res else ()
+    if not res:
+        return ()
+
+    # what only some of them wrote isn't known (not even that it's still
+    # zero), as where paths merge (see _merge_at)
+    for fact in every - res:
+        if opcode(fact) == "memory":
+            res.add(("memory", fact[1], fact[2], None))
+    return tuple(sorted(res, key=str))
 
 
 def read_memory(known, addr):
