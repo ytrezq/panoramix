@@ -921,17 +921,6 @@ def simplify_exp(exp):
         else:
             return ("data",) + tuple(res)
 
-    if m := match(
-        exp, ("mul", -1, ("mask_shl", ":size", ":offset", ":shl", ("mul", -1, ":val")))
-    ):
-        return (
-            "mask_shl",
-            simplify_exp(m.size),
-            simplify_exp(m.offset),
-            simplify_exp(m.shl),
-            simplify_exp(m.val),
-        )
-
     if type(exp) == int and to_real_int(exp) > -(
         8**22
     ):  # if it's larger than 30 bytes, it's probably
