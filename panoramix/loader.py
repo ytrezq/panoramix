@@ -152,11 +152,10 @@ def selector_test(cond):
 
     if opcode(cond) in ("eq", "xor") and len(cond) == 3:
         for num, other in ((cond[1], cond[2]), (cond[2], cond[1])):
-            if type(num) is int and str(("cd", 0)) in str(other):
-                if opcode(cond) == "eq":
-                    return num, True
-                elif num < 2**32:
-                    return num, False
+            # (a selector is 4 bytes: a number past them is no hash, but a
+            # comparison of more of the calldata - a word of it, say)
+            if type(num) is int and 0 <= num < 2**32 and str(("cd", 0)) in str(other):
+                return num, opcode(cond) == "eq"
 
     m = match(cond, ("add", ":int:num", ":other"))
     if m and str(("cd", 0)) in str(m.other):
@@ -167,7 +166,7 @@ def selector_test(cond):
             # selector - (-num)
             num, other = -m.num % 2**256, m.other
 
-        if num < 2**32 and str(("cd", 0)) in str(other):
+        if 0 <= num < 2**32 and str(("cd", 0)) in str(other):
             return num, False
 
     return None
