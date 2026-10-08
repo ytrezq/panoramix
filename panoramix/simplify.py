@@ -1877,21 +1877,23 @@ assert find_mems(test_e) == {
 }, find_mems(test_e)
 
 
-def overwrites_mem(line, mem_idx):
+def overwrites_mem(line, mem_idx, breaks=True):
     """
     for a given line, returns True if it potentially
     overwrites *any part* of memory index, False if it *for sure* doesn't
+    (of a loop without breaks, as its next iterations see it: not what it
+    writes on its way out)
 
     """
     if m := match(line, ("setmem", ":set_idx", Any)):
         return range_overlaps(m.set_idx, mem_idx) is not False
 
     if opcode(line) == "while":
-        return while_touches_mem(line, mem_idx)
+        return while_touches_mem(line, mem_idx, breaks)
 
     if opcode(line) == "if":
         # matters for what comes after the if, when its branches merge again
-        return any(overwrites_mem(l, mem_idx) for l in line[2] + line[3])
+        return any(overwrites_mem(l, mem_idx, breaks) for l in line[2] + line[3])
 
     return False
 
@@ -2001,7 +2003,7 @@ def changes_reads(line, exp):
     return False
 
 
-def affects(line, exp):
+def affects(line, exp, breaks=True):
     if changes_reads(line, exp):
         return True
 
@@ -2022,7 +2024,7 @@ def affects(line, exp):
 
     for m in mems:
         m_idx = m[1]
-        if overwrites_mem(line, m_idx):
+        if overwrites_mem(line, m_idx, breaks):
             return True
 
     return False
@@ -2371,6 +2373,23 @@ def replace_mem(trace, mem_idx, mem_val):
             mem_id = ("mem", mem_idx)
             forget_vars(defined, assigned_vars(if_true + if_false))
 
+        elif opcode(line) == "while" and not (
+            affects(line, mem_val, breaks=False) or affects(line, mem_id, breaks=False)
+        ):
+            # (one whose iterations don't change it)
+            _, cond, path, jds, vars = line
+            vars = [replace_mem_exp(v, mem_idx, mem_val) for v in vars]
+            cond = replace_mem_exp(cond, mem_idx, mem_val)
+            path = replace_mem(path, mem_idx, mem_val)
+
+            res.append(("while", cond, path, jds, vars))
+            if affects(line, mem_val) or affects(line, mem_id):
+                # it writes there on its way out, by a break: what follows it
+                # reads what it wrote
+                res.extend(copy(trace[idx + 1 :]))
+                return res
+            defined.clear()
+
         elif affects(line, mem_val) or affects(line, mem_id):
             if opcode(line) in ("call", "staticcall", "delegatecall", "callcode"):
                 # what it's called with is read before it runs, and changes
@@ -2380,20 +2399,6 @@ def replace_mem(trace, mem_idx, mem_val):
                 return res
             res.extend(copy(trace[idx:]))
             return res
-
-        elif opcode(line) == "while":
-            _, cond, path, jds, vars = line
-            # shouldn't this go above the affects if above? and also update vars even if
-            # the loops affects the memidx?
-
-            vars = [replace_mem_exp(v, mem_idx, mem_val) for v in vars]
-
-            if not affects(line, ("mem", mem_idx)) and not affects(line, (mem_val)):
-                cond = replace_mem_exp(cond, mem_idx, mem_val)
-                path = replace_mem(path, mem_idx, mem_val)
-
-            res.append(("while", cond, path, jds, vars))
-            defined.clear()
 
         else:
             # speed
@@ -2605,7 +2610,9 @@ def replace_var(trace, var_idx, var_val):
                 res.extend(copy(trace[idx + 1 :]))
                 return res
 
-            if not affects(line, var_val):
+            if not affects(line, var_val, breaks=False):
+                # (what its iterations don't change: but for what it writes
+                # on its way out, by a break - which what follows it reads)
                 cond = replace(cond, var_id, var_val)
                 path = replace_var(path, var_idx, var_val)
 
@@ -2828,10 +2835,13 @@ def extract_paths(while_exp):
     return f(trace, jd, [])
 
 
-def extract_setmems(while_exp):
+def extract_setmems(while_exp, breaks=True):
     """
-    The setmems of the loop body that are on a path to a `continue` (the
-    ones on the paths leaving the loop don't matter to what comes after it).
+    The setmems of the loop body that are on a path to a `continue`, or to
+    its end - a break, after which what follows the loop runs (the ones on
+    the paths that end the execution don't matter to what comes after it).
+    Without breaks, those on a path to a continue only: what the loop's next
+    iterations may read.
 
     Same as collecting them from extract_paths, without enumerating the paths,
     which are exponential in the number of ifs in the body.
@@ -2840,9 +2850,9 @@ def extract_setmems(while_exp):
     assert op == "while"
 
     def f(trace, after):
-        # `after`: whether a continue is reachable from the end of `trace`.
-        # Returns the setmems on the paths through `trace` that reach a
-        # continue, and whether there are such paths.
+        # `after`: whether a continue, or the end of the body, is reachable
+        # from the end of `trace`. Returns the setmems on the paths through
+        # `trace` that reach one, and whether there are such paths.
         res = []
         reach = after
 
@@ -2864,7 +2874,7 @@ def extract_setmems(while_exp):
 
         return res, reach
 
-    res, _ = f(trace, False)
+    res, _ = f(trace, breaks)
 
     return list(dict.fromkeys(res))
 
@@ -2880,13 +2890,13 @@ def extract_mems(while_exp):
 #        mems = extract_mems(path)
 
 
-def while_touches_mem(line, mem_idx):
+def while_touches_mem(line, mem_idx, breaks=True):
     a = parse_counters(line)
     op, cond, path, jds, setvars = line
     assert op == "while"
 
     #    try:
-    setmems = extract_setmems(line)
+    setmems = extract_setmems(line, breaks)
     #    setmems = find_setmems(path)
     #    except Exception:
     #        return True
