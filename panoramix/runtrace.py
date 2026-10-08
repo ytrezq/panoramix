@@ -105,6 +105,10 @@ class Machine:
         self.mem[off : off + len(data)] = data
 
     def cdbytes(self, off, n):
+        if n > 2**20:
+            # (as the memory, see mread: bytes of a length read from the
+            # calldata, say, would never be made)
+            raise Unsupported("calldata")
         chunk = self.calldata[off : off + n] if off < len(self.calldata) else b""
         return chunk + b"\0" * (n - len(chunk))
 
@@ -272,7 +276,7 @@ class Machine:
             return res + b"".join(tails)
         if op == "bytes":
             n = self.ev(e[1])
-            if n > 32 and not (type(e[2]) == int and e[2] >= 0):
+            if n > 32 and not (type(e[2]) == int and e[2] >= 0) or n > 2**20:
                 raise Unsupported("bytes")
             v = e[2] if type(e[2]) == int and e[2] >= 2**256 else self.ev(e[2])
             return (v & ((1 << (8 * n)) - 1)).to_bytes(n, "big")
