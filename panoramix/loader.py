@@ -98,17 +98,23 @@ def is_marker(line):
 
 def reverts(trace):
     """True if the trace always reverts (without calling any function)."""
-    trace = [line for line in trace if not is_marker(line)]
-    if not trace:
-        return False
+    # (the branches still to look at, rather than a call for each: the ifs
+    # can be nested deeper than python's recursion limit)
+    todo = [trace]
+    while todo:
+        trace = [line for line in todo.pop() if not is_marker(line)]
+        if not trace:
+            return False
 
-    last = trace[-1]
-    if opcode(last) == "if":
-        return reverts(last[2]) and reverts(last[3])
+        last = trace[-1]
+        if opcode(last) == "if":
+            todo += [last[3], last[2]]
+        elif opcode(last) not in ("revert", "invalid") or any(
+            opcode(line) in ("funccall", "if") for line in trace[:-1]
+        ):
+            return False
 
-    return opcode(last) in ("revert", "invalid") and not any(
-        opcode(line) in ("funccall", "if") for line in trace[:-1]
-    )
+    return True
 
 
 def is_dispatch(cond):
@@ -186,25 +192,35 @@ def strip_markers(trace):
 
 def entry_paths(trace, is_leaf, entry=()):
     """(entry, leaf) for every line of the dispatcher's trace for which is_leaf."""
-    for line in trace:
-        if is_leaf(line):
-            yield entry, line
+    # (what's still to walk - lines, from where, what runs before them -
+    # rather than a call for each branch: the ifs can be nested deeper than
+    # python's recursion limit)
+    todo = [(trace, 0, entry)]
+    while todo:
+        trace, start, entry = todo.pop()
+        for idx in range(start, len(trace)):
+            line = trace[idx]
+            if is_leaf(line):
+                yield entry, line
 
-        elif opcode(line) == "setmem":
-            entry = entry + (line,)
+            elif opcode(line) == "setmem":
+                entry = entry + (line,)
 
-        elif opcode(line) == "if":
-            _, cond, if_true, if_false = line
-            for taken, branch, other in (
-                (True, if_true, if_false),
-                (False, if_false, if_true),
-            ):
-                branch_entry = entry
-                if reverts(other) and not is_dispatch(cond):
-                    branch_entry += (
-                        ("check", cond, taken, tuple(strip_markers(other))),
-                    )
-                yield from entry_paths(branch, is_leaf, branch_entry)
+            elif opcode(line) == "if":
+                _, cond, if_true, if_false = line
+                # its branches, the one taken first, then what follows it
+                todo.append((trace, idx + 1, entry))
+                for taken, branch, other in (
+                    (False, if_false, if_true),
+                    (True, if_true, if_false),
+                ):
+                    branch_entry = entry
+                    if reverts(other) and not is_dispatch(cond):
+                        branch_entry += (
+                            ("check", cond, taken, tuple(strip_markers(other))),
+                        )
+                    todo.append((branch, 0, branch_entry))
+                break
 
 
 def apply_entry(entry, trace):

@@ -536,11 +536,16 @@ def find_f_set(exp, f):
 
 
 def find_f_list(exp, f, default=None):
-    ret = f(exp) or []
-
-    if type(exp) in (list, tuple):
-        for e in exp:
-            ret.extend(find_f_list(e, f))
+    # (what f finds in exp and in everything in it, in that order - walked
+    # in a loop rather than recursively: a trace's ifs can be nested deeper
+    # than python's recursion limit)
+    ret = []
+    todo = [exp]
+    while todo:
+        exp = todo.pop()
+        ret.extend(f(exp) or [])
+        if type(exp) in (list, tuple):
+            todo.extend(reversed(exp))
 
     return ret
 
