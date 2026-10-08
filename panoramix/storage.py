@@ -1820,13 +1820,15 @@ def rewrite_accesses(trace, form):
             forms[k] = form(size, off, idx, write)
         return forms[k]
 
-    def f(exp):
+    def parts(exp):
+        """(what exp is made of, what of: list, tuple, "set") - or None for
+        what stays as it is"""
         if type(exp) == list:
-            return [f(e) for e in exp]
+            return exp, list
         if type(exp) != tuple:
-            return exp
+            return None
         if opcode(exp) == "storage" and len(exp) == 4:
-            return f(get(exp[1], exp[2], exp[3], False))
+            return [get(exp[1], exp[2], exp[3], False)], "one"
         if opcode(exp) == "store" and len(exp) == 5:
             size, off, idx, val = exp[1:]
             target = get(size, off, idx, True)
@@ -1835,7 +1837,7 @@ def rewrite_accesses(trace, form):
                 and type(target[1]) == int
                 and not (opcode(target[2]) == "sf" and type(target[2][2]) != int)
             ):
-                return ("set", f(target), f(val))
+                return [target, val], "set"
             # bits at an offset computed at runtime: the whole word
             whole = ("st", 256, ("sr", idx), 256)
             mask = ("mask_shl", size, 0, off, M)
@@ -1844,10 +1846,36 @@ def rewrite_accesses(trace, form):
                 ("and", whole, ("not", mask)),
                 ("mask_shl", size, 0, off, val),
             )
-            return ("set", f(whole), f(merged))
-        return tuple(f(e) for e in exp)
+            return [whole, merged], "set"
+        return exp, tuple
 
-    return f(trace)
+    # (in a loop rather than recursively: the trace of a function that calls
+    # itself, unrolled, can nest deeper than python's recursion limit)
+    done = []
+    todo = [(trace, None)]
+    while todo:
+        exp, made = todo.pop()
+        if made is not None:
+            # what's made of the last n done
+            kind, n = made
+            args = done[len(done) - n :]
+            del done[len(done) - n :]
+            if kind == "one":
+                done.append(args[0])
+            elif kind == "set":
+                done.append(("set",) + tuple(args))
+            else:
+                done.append(kind(args))
+            continue
+        p = parts(exp)
+        if p is None:
+            done.append(exp)
+            continue
+        elems, kind = p
+        todo.append((None, (kind, len(elems))))
+        todo.extend((e, None) for e in reversed(elems))
+
+    return done[0]
 
 
 def rewrite_raw(functions):
