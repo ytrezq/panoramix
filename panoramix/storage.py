@@ -1435,8 +1435,13 @@ class Storage:
             if all(not st for st, size, off, wr in accs) and all(
                 type(off) == int for st, size, off, wr in accs
             ):
-                read = [(size, off) for st, size, off, wr in accs]
-                if is_bytes_slot(set(read)):
+                read = {(size, off) for st, size, off, wr in accs}
+                if {(1, 0), (7, 1), (255, 1)} <= read:
+                    # (none of its data read: a bytes, or a string, only if
+                    # its length is read as theirs is - the lowest bit tells
+                    # a short one, whose length is the 7 bits from the bit 1,
+                    # from a long one, the bits from 1 on. A flag in the bit
+                    # 0 of an uint8 and the 7 bits above it are no bytes)
                     self.types[n] = ("bytes",)
                     continue
                 self.fields[n] = layout([(size, off, wr) for st, size, off, wr in accs])
