@@ -431,18 +431,10 @@ def eval_bool(exp, known_true=True, symbolic=True):
         if left == right:
             return False
 
-        try:  # a > b iff b < a iff b+1 <= a
-            le = algebra.lt_op(algebra.add_op(left, 1), right)
-            logger.debug("le %s %s %s", le, left, right)
-
-            if le == True:
-                return False
-            if le == False:
-                return True
-            if le is None:
-                return None
+        try:  # a > b iff b < a
+            return algebra.lt_op(right, left)
         except Exception:
-            pass
+            return None
 
     if opcode(exp) == "ge":
         left = eval(exp[1])
