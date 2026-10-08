@@ -623,13 +623,17 @@ class Function(EasyCopy):
         exp_text.append(("payable", self.payable))
 
         self.read_only = True
+        # (what changes the state, or does something that stays: a log)
         for op in [
             "store",
+            "tstore",
             "selfdestruct",
             "call",
             "delegatecall",
-            "codecall",
+            "callcode",
             "create",
+            "create2",
+            "log",
         ]:
             if f"'{op}'" in str(self.trace):
                 self.read_only = False
