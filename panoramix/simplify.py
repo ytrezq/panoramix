@@ -99,7 +99,7 @@ from panoramix.utils.helpers import (
 )
 
 from panoramix.postprocess import cleanup_mul_1
-from panoramix.rewriter import postprocess_exp, postprocess_trace, rewrite_string_stores
+from panoramix.rewriter import postprocess_exp, postprocess_trace
 
 logger = logging.getLogger(__name__)
 
@@ -432,7 +432,8 @@ def _simplify_trace(trace, timeout=0):
     trace = replace_f(trace, postprocess_exp)
     trace = rewrite_trace_ifs(trace, postprocess_trace)
 
-    trace = rewrite_string_stores(trace)
+    # (a string written to storage is left as the loops that copy it: no
+    # notation says a store of all of its bytes, nor does storage.py read it)
     explain("using heuristics to clean up some things", trace)
 
     if not should_quit():
