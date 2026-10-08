@@ -1364,7 +1364,13 @@ assert only_add_in_expr(("setvar", 100, ("mul", ("var", 100), 1))) is False
 assert only_add_in_expr(("setvar", 100, ("add", ("var", 100), 1))) is True
 
 
-def propagate_storage_in_loop(line):
+def propagate_storage_in_loop(line, after=()):
+    """
+    A loop variable that starts at a slot sha3(...) + k, made to start at k
+    and read as itself + sha3(...) in the loop. (Not one that `after`, what
+    runs after the loop, reads: it'd read it moved - nor one the step of
+    another variable reads.)
+    """
     op, cond, path, jds, setvars = line
     assert op == "while"
 
@@ -1379,13 +1385,11 @@ def propagate_storage_in_loop(line):
             if type(m.val) != int or m.val < 1000:  # used to be int:val here, why?
                 return value
 
+    # the steps of the loop, at the continues of its own, as deep as they are
+    steps = [instr for c in find_conts(path) if c[1] == jds for instr in c[2]]
+
     def path_only_add_in_continue(path):
-        for op in path:
-            if opcode(op) == "continue":
-                _, _, instrs = op
-                if any(not only_add_in_expr(instr) for instr in instrs):
-                    return False
-        return True
+        return all(only_add_in_expr(instr) for instr in steps)
 
     new_setvars = []
 
@@ -1402,6 +1406,13 @@ def propagate_storage_in_loop(line):
         # it's not safe to proceed. If we would do "i = i * 2", then it doesn't
         # make sense to substract a constant to "i".
         if not path_only_add_in_continue(path):
+            new_setvars.append(setvar)
+            continue
+
+        if contains(after, ("var", var_id)) or any(
+            instr[1] != var_id and contains(instr[2], ("var", var_id))
+            for instr in steps
+        ):
             new_setvars.append(setvar)
             continue
 
@@ -1423,16 +1434,22 @@ def propagate_storage_in_loop(line):
     return [("while", cond, path, jds, new_setvars)]
 
 
-def propagate_storage_in_loops(trace):
-    def touch(line):
-        if opcode(line) == "while":
-            r = propagate_storage_in_loop(line)
-            if r is not None:
-                return r
+def propagate_storage_in_loops(trace, after=()):
+    """`after`: what runs after `trace` (a branch of an if), its parts."""
+    res = []
+    for idx, line in enumerate(trace):
+        if opcode(line) == "if":
+            _, cond, if_true, if_false = line
+            rest = (trace[idx + 1 :],) + after
+            if_true = propagate_storage_in_loops(if_true, rest)
+            if_false = propagate_storage_in_loops(if_false, rest)
+            res.append(("if", cond, if_true, if_false))
+        elif opcode(line) == "while":
+            res.extend(propagate_storage_in_loop(line, (trace[idx + 1 :],) + after))
+        else:
+            res.append(line)
 
-        return [line]
-
-    return rewrite_trace(trace, touch)
+    return res
 
 
 def _loop_to_setmem(line):
