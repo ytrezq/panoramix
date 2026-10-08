@@ -1508,6 +1508,14 @@ def apply_mask_to_storage(exp, size, offset, shl):
 def apply_mask(val, size, offset=0, shl=0):
     assert all_concrete(val, size, offset, shl)
 
+    # a word (-1 is 2**256 - 1, see simplify_exp) is its 256 bits, and what
+    # the mask makes of it a word: the bits moved past its top are gone - x
+    # << 128 of shl_op is all of x moved. (A number of more bytes, of a long
+    # memory range, is as wide as it is.)
+    word = -(2**256) < val < 2**256
+    if word:
+        val %= 2**256
+
     mask = mask_to_int(size, offset)
     val = val & mask
 
@@ -1521,7 +1529,7 @@ def apply_mask(val, size, offset=0, shl=0):
     if shl < 0:
         val = val >> -shl
 
-    return val
+    return val % 2**256 if word else val
 
 
 def shr_op(exp, off):
