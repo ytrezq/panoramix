@@ -1261,9 +1261,12 @@ def getter_access(func):
         ret = m.s
     if m := match(ret, ("signextend", Any, ":s")):
         ret = m.s
-    if (m := match(ret, ("mask_shl", ":int:size", 0, ":int:shl", ":s"))) and opcode(
-        m.s
-    ) == "storage":
+    if (
+        (m := match(ret, ("mask_shl", ":int:size", 0, ":int:shl", ":s")))
+        and opcode(m.s) == "storage"
+        and type(m.s[1]) is int
+    ):
+        # (a read of a size computed at runtime is no getter's)
         s_size = m.s[1]
         if (m.shl == 0 and m.size >= s_size) or (
             m.size == s_size and m.shl == 256 - m.size
