@@ -302,6 +302,12 @@ def split_or(value):
         assert opcode(row) == "mask_shl"
         _, size, offset, shl, value = row
 
+        if all_concrete(size, offset, shl) and size + offset + shl > 256:
+            # a part that goes past the top of the word: x << 128 is all of x
+            # moved, as the code shifted it (see shl_op), not 256 bits of the
+            # word - the word is written whole, as it's computed
+            return [(256, 0, orig_value)]
+
         stor_size = size
         stor_offset = add_op(offset, shl)
         shl = sub_op(shl, stor_offset)
