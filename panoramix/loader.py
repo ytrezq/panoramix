@@ -496,11 +496,12 @@ class Loader(EasyCopy):
 
                     param = 0
                     for i in range(num_words):
-                        try:
+                        if stack:
                             param = param * 0x100 + stack.pop()
                             line += 1
-                        except Exception:
-                            break
+                        else:
+                            # past the end of the code: the bytes are 0
+                            param = param * 0x100
 
             parsed_lines.append((orig_line, op, param))
             line += 1
