@@ -1558,10 +1558,16 @@ def shl_op(exp, off):
     such as 159 - x isn't) and the mask one that can be printed as it is
     (see readable_mask). Else it's left as it is, ("shl", off, exp).
     """
+    if exp == 0:
+        # (moved by anything)
+        return 0
+
     if type(off) is int:
         return 0 if off >= 256 else mask_op(exp, shl=off)
 
-    if is_word(off):
+    if is_word(off) and value_range(off)[1] < 256:
+        # (one that may be 256 or more shifts it all out, but known it may
+        # be a word written negative, -8: a mask would move it right)
         res = mask_op(exp, shl=off)
         if _readable(res):
             return res
