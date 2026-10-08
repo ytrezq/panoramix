@@ -1200,7 +1200,8 @@ def bytes_tail(trace, key, selector):
     data=b[all])`, when that's the same - or None. That is checked by
     running both (see runtrace), on bytes as the compiler keeps them, short
     and long, of every length the code may treat apart, and params clean
-    and dirty; the trace may read nothing else of the storage.
+    and dirty, and of the numbers the code compares with; the trace may
+    read nothing else of the storage.
     """
     import random
 
@@ -1225,6 +1226,19 @@ def bytes_tail(trace, key, selector):
             p.to_bytes(32, "big") for p in params
         )
         worlds.append((calldata, content))
+    # and params of the numbers the conditions of the code compare with, and
+    # of the ones next to them: `if tokenId == 1337: return ''` is a branch
+    # none of those values takes
+    near = set()
+    for cond in find_f_list(
+        trace, lambda e: [e[1]] if opcode(e) in ("if", "while") else []
+    ):
+        for c in find_f_list(cond, lambda e: [e] if type(e) == int else []):
+            near |= {(c + d) % 2**256 for d in (-1, 0, 1)}
+    for n, value in enumerate(sorted(near - set(values))[:64]):
+        length = lengths[n % len(lengths)]
+        content = bytes(rnd.randrange(1, 256) for _ in range(length))
+        worlds.append((selector.to_bytes(4, "big") + value.to_bytes(32, "big") * 8, content))
     for n in (0, 31):
         # calldata too short for a param
         worlds.append((selector.to_bytes(4, "big") + b"\x01" * n, b"ab"))
@@ -1275,15 +1289,29 @@ def bytes_tail(trace, key, selector):
             ("data", ("arr", ("storage", 256, 0, ("length", key)), ("sbytes", key))),
         )
     ]
+
+    def returns_bytes(r, content):
+        """whether the run r returned the content, ABI-encoded"""
+        data = content + b"\0" * (-len(content) % 32)
+        data = (32).to_bytes(32, "big") + len(content).to_bytes(32, "big") + data
+        return r[0] == ("return", data)
+
     for n, cand in enumerate(splits(trace, tail)):
         if n > 200:
             break
+        reached = False
         for w, r in zip(worlds, orig):
             got = run(cand, *w)
-            if got is None or got[0] != r[0] or (r[0][0] == "return" and not got[1]):
+            if got is None or got[0] != r[0]:
                 break
+            if w[1] and returns_bytes(r, w[1]) and not got[1]:
+                # the bytes returned by what's kept of the code, not by the
+                # tail (a branch kept returns something else: `return ''`)
+                break
+            reached = reached or got[1]
         else:
-            return cand
+            if reached:
+                return cand
     return None
 
 
