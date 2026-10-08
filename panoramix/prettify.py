@@ -1595,7 +1595,7 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
                 )
 
         if all_concrete(size, offset, shl, val):
-            return pret(apply_mask(exp[4], exp[1], exp[2], exp[3]))
+            return pret(apply_mask(exp[4], exp[1], exp[2], exp[3]), parentheses=ctx)
 
         if (
             all_concrete(size, offset, shl)
