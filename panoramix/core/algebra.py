@@ -21,6 +21,7 @@ import logging
 from panoramix.core import variants
 from panoramix.matcher import Any, match
 from panoramix.utils.helpers import (
+    CACHES,
     EasyCopy,
     all_concrete,
     cached,
@@ -1355,7 +1356,10 @@ def mask_mask_op(size, offset, shl, exp_size, exp_offset, exp_shl, exp):
     assert False
 
 
+# (what a mask makes of an expression may rest on what's known of the
+# variables in it, see value_range: forgotten with the rest)
 mask_dict = {}
+CACHES.append(mask_dict)
 
 # the operations whose result is 0 or 1
 BOOL_OPS = ("bool", "iszero", "lt", "gt", "le", "ge", "eq", "slt", "sgt", "sle", "sge")
