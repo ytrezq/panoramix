@@ -137,6 +137,11 @@ def selector_test(cond):
         res = selector_test(cond[1])
         return res and (res[0], not res[1])
 
+    if match(cond, ("mask_shl", 32, 224, Any, ("cd", 0))) and cond[3] in (0, -224):
+        # the selector itself, its being not 0: of the hash 0 - solc's
+        # optimizer tests `iszero(selector)` for `selector == 0`
+        return 0, False
+
     if opcode(cond) in ("and", "or"):
         # the selector is the hash and something else holds (Vyper's
         # dispatchers from 0.3.10: calldata.size > 3) - or, negated, it isn't
