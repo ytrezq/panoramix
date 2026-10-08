@@ -555,8 +555,10 @@ def pretty_line(r, add_color=True):
                 )
                 for i, p in zip(in_log, res_params)
             ]
-            # in the order of the declaration
-            p_list = [p_list[in_log.index(i)] for i in inputs]
+            # in the order of the declaration (by the inputs themselves: two of
+            # them may be alike)
+            pos = {id(i): k for k, i in enumerate(in_log)}
+            p_list = [p_list[pos[id(i)]] for i in inputs]
 
             if len(p_list) == 1:
                 yield col(
