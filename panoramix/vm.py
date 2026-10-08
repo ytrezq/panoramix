@@ -156,6 +156,49 @@ STATE_CHANGING_OPS = (
     "selfdestruct",
 )
 
+# the instructions that put no word on the stack
+NO_RESULT_OPS = (
+    "stop",
+    "calldatacopy",
+    "codecopy",
+    "extcodecopy",
+    "returndatacopy",
+    "mcopy",
+    "pop",
+    "mstore",
+    "mstore8",
+    "sstore",
+    "tstore",
+    "jump",
+    "jumpi",
+    "jumpdest",
+    "log0",
+    "log1",
+    "log2",
+    "log3",
+    "log4",
+    "return",
+    "revert",
+    "selfdestruct",
+    "invalid",
+    "assert_fail",
+)
+
+
+def stack_inputs(line):
+    """How many words of the stack the instruction of the line uses."""
+    _, op, param = line[:3]
+    if op == "dup":
+        return param
+    if op == "swap":
+        return param + 1
+    diff = opcode_dict.stack_diffs.get(op)
+    if diff is None:
+        # (an invalid instruction)
+        return 0
+    return (0 if op in NO_RESULT_OPS else 1) - diff
+
+
 # A codecopy of more bytes than that is left as code.data: the number would be
 # unreadable anyway, and one of more than 4300 digits (1786 bytes) can't even be
 # turned into a string since python 3.11, which aborts the whole function.
@@ -1415,6 +1458,12 @@ class VM(EasyCopy):
             except KeyError:
                 # past the last instruction: the code stops there
                 trace.append(("stop",))
+                return trace
+
+            if self.stack.len() < stack_inputs(line):
+                # fewer words on the stack than the instruction uses: the code
+                # halts there, as at an invalid instruction
+                trace.append(("invalid", "stack underflow"))
                 return trace
 
             res = self.handle_jumps(trace, line, condition)
