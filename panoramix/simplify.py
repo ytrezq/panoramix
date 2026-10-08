@@ -2170,7 +2170,10 @@ def cleanup_mems(trace, used_after=None):
     res = []
 
     for idx, line in enumerate(trace):
-        if match(line, ("setmem", ":rng", ("mem", ":rng"))):
+        if match(line, ("setmem", ":rng", ("mem", ":rng"))) or match(
+            line, ("setmem", ("range", Any, 0), Any)
+        ):
+            # (a copy of memory onto itself, or of no bytes: nothing changes)
             continue
 
         if opcode(line) in ["call", "staticcall", "delegatecall", "callcode"]:
