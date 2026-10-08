@@ -141,7 +141,7 @@ def to_mask(num, bounds=None):
 
             return (mask_len, 0)
 
-    if opcode(num) == "add" and num[1] == -1:
+    if opcode(num) == "add" and len(num) == 3 and num[1] == -1:
         return to_mask(
             (
                 "sub",
