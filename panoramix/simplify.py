@@ -1739,12 +1739,17 @@ def cond_bounds(cond):
 
 
 def decide_le(a, b, bounds):
-    """a <= b by the bounds of cond_bounds, None if they don't say."""
+    """
+    a <= b by the bounds of cond_bounds, None if they don't say - as the
+    words they are, as the bounds are (-1 is 2**256 - 1).
+    """
     if type(a) is int and b in bounds:
         lo, hi = bounds[b]
+        a %= 2**256
         return True if lo >= a else False if hi < a else None
     if type(b) is int and a in bounds:
         lo, hi = bounds[a]
+        b %= 2**256
         return True if hi <= b else False if lo > b else None
     return None
 
