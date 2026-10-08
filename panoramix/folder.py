@@ -15,7 +15,9 @@ from panoramix.utils.helpers import (
     ENDC,
     FAIL,
     car,
+    contains,
     find_f_list,
+    get_op,
     opcode,
     replace_f,
 )
@@ -596,9 +598,73 @@ def make_ifs(path):
     return ret
 
 
+# what the lines moved out of an if may change, that its condition reads
+STATE_READS = (
+    "st",
+    "sall",
+    "storage",
+    "stor",
+    "mem",
+    "var",
+    "tload",
+    "balance",
+    "extcodesize",
+    "extcodehash",
+)
+STATE_SYMBOLS = (
+    "ext_call",
+    "return_data",
+    "returndatasize",
+    "return_code",
+    "new_address",
+    ".result",
+    "memcopy",
+    "gas",
+    "msize",
+)
+
+
+def reads_state(exp, reads=STATE_READS):
+    """whether exp reads what a line may change: storage, memory, a variable..."""
+    if type(exp) == str:
+        return any(k in exp for k in STATE_SYMBOLS)
+    if type(exp) in (tuple, list):
+        return opcode(exp) in reads or any(reads_state(e, reads) for e in exp)
+    return False
+
+
+def changes_read(line, cond):
+    """whether the line may change what cond reads"""
+    if contains(cond, "gas") or contains(cond, "msize"):
+        # (the gas left, the size of the memory: any line may change them)
+        return True
+    op = opcode(line)
+    if op == "setvar":
+        return contains(cond, ("var", line[1]))
+    if op == "setmem":
+        return get_op(cond, "mem") is not None
+    if op == "store":
+        return any(get_op(cond, k) is not None for k in ("st", "sall", "storage", "stor"))
+    if op == "if":
+        # (one-sided, or with an else)
+        return any(changes_read(l, cond) for branch in line[2:] for l in branch)
+    if type(line) == str or op in ("log", "jd") or op in TERMINATING:
+        return False
+    if op in ("call", "staticcall", "delegatecall", "callcode", "create", "create2"):
+        # (the state, the memory, what it returns - not a variable)
+        return reads_state(cond, tuple(r for r in STATE_READS if r != "var"))
+    return reads_state(cond)
+
+
 def try_merge_ifs(cond, if_true, if_false):
+    # the lines both branches begin with go before the if - before its
+    # condition is evaluated: up to one that may change what it reads
     idx = 0
-    while idx < min(len(if_true), len(if_false)) and if_true[idx] == if_false[idx]:
+    while (
+        idx < min(len(if_true), len(if_false))
+        and if_true[idx] == if_false[idx]
+        and not changes_read(if_true[idx], cond)
+    ):
         idx += 1
 
     assert if_true[:idx] == if_false[:idx]
