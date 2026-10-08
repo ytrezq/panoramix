@@ -2095,7 +2095,8 @@ def _mem_use(trace, mem_idx):
             memloc, memval = m.memloc, m.memval
             memval = simplify_exp(memval)
 
-            if exp_uses_mem(memval, mem_idx):
+            # (what's written, and where: mem[mem[64]] = x reads mem[64])
+            if exp_uses_mem(memval, mem_idx) or exp_uses_mem(memloc, mem_idx):
                 return USED
 
             if any(overwrites_mem(line, inner[1]) for inner in find_mems(mem_idx)):
