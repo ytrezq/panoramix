@@ -595,7 +595,7 @@ def form(base, t, st, size, off):
         loc = ("st", 256, ("sbl", base), 256)
         if off == 0 and size == 256:
             return loc
-        return ("mask_shl", size, off, -off, loc)
+        return ("mask_shl", size, off, mul_op(-1, off), loc)
 
     if s[0] == "data":
         if t[0] == "bytes":
