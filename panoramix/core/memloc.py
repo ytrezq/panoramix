@@ -743,6 +743,10 @@ def store_reads_written(a, b):
             continue
         if not all_concrete(r_size, r_off, size, off):
             return True
+        if r_off < 0:
+            # a field moved left (see algebra.apply_mask_to_storage): of the
+            # bits from 0
+            r_off = 0
         if r_off < off + size and off < r_off + r_size:
             return True
     return False
