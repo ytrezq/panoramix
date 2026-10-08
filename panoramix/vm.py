@@ -1389,6 +1389,10 @@ class VM(EasyCopy):
         if i not in lines:
             if type(i) != int:
                 return [("undefined", "jump to a parameter computed at runtime", i)]
+            elif safe and i == self.loader.last_line:
+                # what follows the last instruction (a jumpi's other branch):
+                # the code stops there, as at a stop
+                return [("stop",)]
             else:
                 return [("invalid", "jumdest", i)]
 
@@ -1402,13 +1406,15 @@ class VM(EasyCopy):
             # next instruction happens to be a jumpdest)
             i = self.loader.next_line(i)
             if i not in lines:
-                return [("invalid", "eof?")]
+                # (the last instruction: past it, the code stops)
+                return [("stop",)]
 
         while True:
             try:
                 line = lines[i]
             except KeyError:
-                trace.append(("invalid", "jumpdest"))
+                # past the last instruction: the code stops there
+                trace.append(("stop",))
                 return trace
 
             res = self.handle_jumps(trace, line, condition)
