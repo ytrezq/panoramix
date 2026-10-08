@@ -613,7 +613,7 @@ def pretty_line(r, add_color=True):
 
         yield f"     gas {gas}"
 
-        if fparams := pretty_memory(fparams, add_color=add_color):
+        if fparams := pretty_memory(fparams, add_color=add_color, selector=True):
             yield "    args {}".format(", ".join(fparams))
 
     elif m := match(r, ("delegatecall", ":gas", ":addr", ":fname", ":fparams")):
@@ -635,7 +635,7 @@ def pretty_line(r, add_color=True):
 
         yield f"     gas {gas}"
 
-        if fparams := pretty_memory(fparams, add_color=add_color):
+        if fparams := pretty_memory(fparams, add_color=add_color, selector=True):
             yield "    args {}".format(", ".join(fparams))
 
     elif opcode(r) == "selfdestruct":
@@ -688,7 +688,7 @@ def pretty_line(r, add_color=True):
 
         yield f"     gas {gas}"
 
-        if fparams := pretty_memory(fparams, add_color=add_color):
+        if fparams := pretty_memory(fparams, add_color=add_color, selector=True):
             yield "    args {}".format(", ".join(fparams))
 
     elif m := match(r, ("staticcall", ":gas", ":addr", ":wei", ":fname", ":fparams")):
@@ -710,7 +710,7 @@ def pretty_line(r, add_color=True):
 
         yield f"        gas {gas}"
 
-        if fparams := pretty_memory(fparams, add_color=add_color):
+        if fparams := pretty_memory(fparams, add_color=add_color, selector=True):
             yield "       args {}".format(", ".join(fparams))
 
     elif m := match(r, ("label", ":name", ":setvars")):
@@ -818,7 +818,9 @@ def pretty_line(r, add_color=True):
             # a custom error without params: its selector alone
             param = ("data", param)
 
-        res_mem = pretty_memory(param, add_color=True, abi_text=True)
+        res_mem = pretty_memory(
+            param, add_color=True, abi_text=True, selector=op == "revert with"
+        )
         ret_val = ", ".join(res_mem)
 
         if not res_mem:
@@ -2091,14 +2093,16 @@ def arr_text(exp):
     return None
 
 
-def pretty_memory(exp, add_color=False, abi_text=False):
+def pretty_memory(exp, add_color=False, abi_text=False, selector=False):
     """
     The elements of a list of data, as they're printed. abi_text: it's the
     data of a return or a revert, where a string that's all the data (after
     a selector) is the ABI-encoded string (see OUTPUT.md) - an ABI-encoded
     string is printed 'text' there, and bytes of text that are all the data
     Bytes(n, 'text'). Elsewhere a string is its bytes, and an ABI-encoded
-    one an Array(len=n, data='text').
+    one an Array(len=n, data='text'). selector: it's the data of a revert or
+    of a call, whose first 4 bytes are a selector, printed as the error or
+    the function it is (elsewhere they're 4 bytes).
     """
     if exp is None:
         return tuple()
@@ -2128,7 +2132,7 @@ def pretty_memory(exp, add_color=False, abi_text=False):
         return e
 
     while idx < len(exp):
-        if idx == 0 and (m := match(exp[0], ("bytes", 4, ":int:selector"))):
+        if selector and idx == 0 and (m := match(exp[0], ("bytes", 4, ":int:selector"))):
             # a selector: of an error, of an event... - its 8 digits when it's
             # not known (a word that small is printed in decimal)
             sel = m.selector % 2**32
