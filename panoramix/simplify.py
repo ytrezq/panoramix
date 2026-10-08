@@ -1146,11 +1146,16 @@ def var_ids(exp, res=None):
 
 def has_loop(trace):
     """Whether there's a loop in the trace."""
-    return any(
-        opcode(line) == "while"
-        or (opcode(line) == "if" and any(has_loop(branch) for branch in line[2:]))
-        for line in trace
-    )
+    # (the branches still to look at, rather than a call for each: ifs
+    # nested deeper than python's recursion limit)
+    todo = [trace]
+    while todo:
+        for line in todo.pop():
+            if opcode(line) == "while":
+                return True
+            if opcode(line) == "if":
+                todo.extend(line[2:])
+    return False
 
 
 def replace_while_var(rest, counter_idx, new_idx, taken=None):
