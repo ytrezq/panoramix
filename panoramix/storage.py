@@ -837,9 +837,15 @@ def language(code, accesses):
     return "vyper" if votes > 0 else "solidity"
 
 
-def checked_below(trace):
-    """{x: n} for the checks that x < n, that revert otherwise, in a trace"""
+def checked_below(trace, loops=False, numbers=True):
+    """
+    {x: n} for the checks that x < n, that revert otherwise, in a trace -
+    and with loops, the conditions x < n of its loops (in their bodies).
+    Without numbers, x < y as well, whatever y is (a length read from the
+    storage), with n None.
+    """
     res = {}
+    n = ":int:n" if numbers else ":n"
 
     def reverts(branch):
         return len(branch) == 1 and opcode(branch[0]) in ("revert", "invalid")
@@ -849,20 +855,20 @@ def checked_below(trace):
         while m := match(cond, ("iszero", ("iszero", ":c"))):
             cond = m.c
         for pattern, delta in (
-            (("lt", ":x", ":int:n"), 0),
-            (("gt", ":int:n", ":x"), 0),
-            (("le", ":x", ":int:n"), 1),
-            (("ge", ":int:n", ":x"), 1),
-            (("iszero", ("ge", ":x", ":int:n")), 0),
-            (("iszero", ("le", ":int:n", ":x")), 0),
-            (("iszero", ("gt", ":x", ":int:n")), 1),
-            (("iszero", ("lt", ":int:n", ":x")), 1),
+            (("lt", ":x", n), 0),
+            (("gt", n, ":x"), 0),
+            (("le", ":x", n), 1),
+            (("ge", n, ":x"), 1),
+            (("iszero", ("ge", ":x", n)), 0),
+            (("iszero", ("le", n, ":x")), 0),
+            (("iszero", ("gt", ":x", n)), 1),
+            (("iszero", ("lt", n, ":x")), 1),
         ):
-            if (
-                (m := match(cond, pattern))
-                and type(m.x) != int
-                and 0 < m.n + delta < 2**32
-            ):
+            if not (m := match(cond, pattern)) or type(m.x) == int:
+                continue
+            if not numbers:
+                res[m.x] = None
+            elif 0 < m.n + delta < 2**32:
                 res.setdefault(m.x, m.n + delta)
                 res[m.x] = min(res[m.x], m.n + delta)
 
@@ -877,10 +883,86 @@ def checked_below(trace):
                 visit(if_true)
                 visit(if_false)
             elif opcode(line) == "while":
+                if loops:
+                    add(line[1])
                 visit(line[2])
 
     visit(trace)
     return res
+
+
+def var_values(trace):
+    """name -> the values a variable is set to in a trace: by setvars, at the
+    start of a loop, by its steps"""
+    res = {}
+
+    def visit(lines):
+        for line in lines:
+            op = opcode(line)
+            if op == "setvar" and len(line) == 3:
+                res.setdefault(line[1], []).append(line[2])
+            elif op == "if":
+                for branch in line[2:]:
+                    visit(branch)
+            elif op == "while":
+                visit(line[2])
+                visit(line[4])
+            elif op == "continue":
+                visit(line[2])
+
+    visit(trace)
+    return res
+
+
+def points(v):
+    """whether v may be a slot a storage pointer holds: a hash, a number that
+    big, a word of the memory (where solidity keeps them)"""
+    return bool(
+        find_f_list(
+            v,
+            lambda x: [x]
+            if (type(x) == int and not -(2**32) < x < 2**32)
+            or opcode(x) in ("sha3", "mem")
+            else [],
+        )
+    )
+
+
+def index_like(e, bounded, values, seen=()):
+    """
+    Whether e is an index - of a fixed array, its element at the slot plus
+    e: made of numbers, of what the code checks is below something (a
+    param, a loop's counter), of variables set to such (from 0 on), of
+    numbers of a few bits (a uint16) or remainders. Not a pointer to the
+    storage (a hash, a slot read from the memory, a param it doesn't check):
+    the slot it points to plus a member's offset is no element of an array
+    at that offset. bounded: what the code checks is below something (see
+    checked_below), values: the values of the variables (see var_values).
+    """
+    if type(e) == int:
+        return -(2**32) < e < 2**32
+    op = opcode(e)
+    if op == "var":
+        if e[1] in seen:
+            # (its step, from itself: s + 1)
+            return True
+        vs = values.get(e[1], [])
+        if any(points(v) for v in vs):
+            # (a pointer, below the end of what it points to, say)
+            return False
+        if e in bounded:
+            return True
+        return bool(vs) and all(index_like(v, bounded, values, seen + (e[1],)) for v in vs)
+    if e in bounded:
+        return True
+    if op in ("add", "mul", "div"):
+        return all(index_like(t, bounded, values, seen) for t in e[1:])
+    if op == "mod":
+        # (a remainder: below what it's taken of)
+        return True
+    if op == "mask_shl" and all(type(t) == int for t in e[1:4]):
+        return e[1] <= 64 or index_like(e[4], bounded, values, seen)
+    return False
 
 
 def find_hashes(exp):
@@ -1375,11 +1457,22 @@ class Storage:
     def __init__(self, functions, lang):
         self.lang = lang
         self.accesses = {}
+        where = {}  # access -> (what's bounded, the variables' values) where it's made
         for f in functions:
             find_accesses(f.trace, self.accesses)
+            accesses = {}
+            find_accesses(f.trace, accesses)
+            known = None
+            for a in accesses:
+                if known is None:
+                    known = (
+                        checked_below(f.trace, loops=True, numbers=False),
+                        var_values(f.trace),
+                    )
+                where.setdefault(a, []).append(known)
 
         self.steps = {}
-        by_root = {}
+        pointers = set()  # the accesses at a slot plus what's no index
         for a in self.accesses:
             size, off, idx = a
             try:
@@ -1387,7 +1480,29 @@ class Storage:
             except Exception:
                 logger.exception("storage path of %s", idx)
                 st = None
+            if (
+                st is not None
+                and st[1]
+                and st[1][0][0] == "off"
+                and type(st[1][0][1]) != int
+                and not any(index_like(st[1][0][1], *known) for known in where[a])
+            ):
+                pointers.add(a)
             self.steps[a] = st
+
+        # A slot plus what's no index (a storage pointer plus a member's
+        # offset, a slot read from the calldata) is taken for an element of a
+        # fixed array only where nothing else is: not to make the variable,
+        # the mapping or the array at that slot an array of what it isn't -
+        # it's the slot it is then.
+        others = {st[0] for a, st in self.steps.items() if st is not None and a not in pointers}
+        for a in pointers:
+            if self.steps[a][0] in others:
+                self.steps[a] = None
+
+        by_root = {}
+        for a, st in self.steps.items():
+            size, off, idx = a
             if st is not None and type(size) == int:
                 by_root.setdefault(st[0], []).append(
                     (st[1], size, off, self.accesses[a])
@@ -1396,8 +1511,16 @@ class Storage:
         self.type_roots(by_root)
 
         # the fixed arrays whose length the functions check: the slots after
-        # the first are theirs, not other variables
+        # the first are theirs, not other variables - but the ones a getter
+        # returns, as a variable (an array found at the slot plus an index
+        # that is one after another's, its length absorbed them)
         self.lengths = self.fixed_lengths(functions)
+        named = set()
+        for f in functions:
+            a = getter_access(f)
+            if a is not None and a[0] != "root" and (st := self.steps.get(a)):
+                if not st[1]:
+                    named.add(st[0])
         moved = False
         for n, length in sorted(self.lengths.items()):
             t = self.types.get(n)
@@ -1406,7 +1529,7 @@ class Storage:
             width = elem_width(t[1])
             slots = -(-length // (256 // width)) if width < 256 else length * t[2]
             for r in range(n + 1, n + slots):
-                if r in self.fields and r in by_root:
+                if r in self.fields and r in by_root and r not in named:
                     for a, st in list(self.steps.items()):
                         if st == (r, []):
                             self.steps[a] = (n, [("off", r - n)])
@@ -1512,7 +1635,7 @@ class Storage:
                 getters.setdefault(("root", a[1]), name)
                 continue
             size, off, idx = a
-            st = self.steps.get(a) or steps(parse(idx, self.lang))
+            st = self.steps[a] if a in self.steps else steps(parse(idx, self.lang))
             if st is None:
                 continue
             n, sts = st
