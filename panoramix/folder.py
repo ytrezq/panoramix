@@ -533,6 +533,13 @@ def try_merge(one, two):
 
     idx -= 1
 
+    # (the line after a one-sided or is the guard of what follows it, that
+    # cleanup_ors skips: it stays with its or)
+    while idx > 0 and any(
+        opcode(x[-idx - 1]) == "or" and len(x[-idx - 1]) == 2 for x in (one, two)
+    ):
+        idx -= 1
+
     if idx > 0:
         return [("or", one[:-idx], two[:-idx])] + one[-idx:]
     else:
