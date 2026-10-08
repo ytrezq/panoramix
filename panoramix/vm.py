@@ -1954,7 +1954,7 @@ class VM(EasyCopy):
                 stack.append(0)
             else:
                 off = 248 - 8 * idx
-                stack.append(mask_op(val, 8, off, shr=off))
+                stack.append(mask_value(val, 8, off, -off))
 
         elif op == "selfbalance":
             stack.append(
@@ -2039,7 +2039,7 @@ class VM(EasyCopy):
                 (
                     "setmem",
                     ("range", memloc, 1),
-                    mask_op(val, 8),
+                    mask_value(val, 8),
                 )
             )
 
