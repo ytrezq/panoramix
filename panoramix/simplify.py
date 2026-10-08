@@ -3147,11 +3147,34 @@ def parse_counters(line):
     else:
         starts_before_stop = False
 
-    if starts_before_stop is True and not leaves_loop(path):
-        # the values after the loop - but where a break leaves it before
+    if (
+        starts_before_stop is True
+        and not leaves_loop(path)
+        and not any(changes_value(line, v) for line in path for v in lastvars.values())
+    ):
+        # the values after the loop - but where a break leaves it before, or
+        # where what they're computed from (where the counter stops: the
+        # length of an array the body pops) changes in the body
         a["endvars"] = lastvars
 
     return a
+
+
+def changes_value(line, exp):
+    """
+    Whether the line changes what exp reads: of the state, or of memory it
+    writes over for sure (where the parts of it may overlap is how memory
+    is, a copy's source and destination: taken as apart, as elsewhere).
+    """
+    if changes_reads(line, exp):
+        return True
+    if opcode(line) == "setmem":
+        return any(range_overlaps(line[1], m[1]) is True for m in find_mems(exp))
+    if opcode(line) == "if":
+        return any(changes_value(l, exp) for l in line[2] + line[3])
+    if opcode(line) == "while":
+        return any(changes_value(l, exp) for l in line[2])
+    return False
 
 
 def leaves_loop(path):
