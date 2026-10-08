@@ -251,7 +251,8 @@ class Function(EasyCopy):
         names = {p["name"] for p in inputs}
         renames = {}
         for p in inputs:
-            if p["name"] in taken:
+            # (once for a name two of them have)
+            if p["name"] in taken and p["name"] not in renames:
                 new = "_" + p["name"]
                 while new in taken or new in names:
                     new = "_" + new
