@@ -1927,6 +1927,15 @@ def event_abi(topic):
     return abi
 
 
+def fits_bytes(val, size):
+    """
+    Whether the number val is written in size bytes: neither of them
+    negative (a size of a length that is), nor so many bytes that python
+    would run out of memory writing them.
+    """
+    return 0 <= size <= 2**24 and 0 <= val and val.bit_length() <= 8 * size
+
+
 def pretty_bytes(size, val, add_color=False, parentheses=False):
     """
     ("bytes", size, val): a word is shown as its value, text as a string,
@@ -1935,7 +1944,7 @@ def pretty_bytes(size, val, add_color=False, parentheses=False):
     if size == 32:
         return prettify(val, add_color=add_color, parentheses=parentheses)
 
-    if type(val) == int and type(size) == int and 0 <= val < 2 ** (8 * size):
+    if type(val) == int and type(size) == int and fits_bytes(val, size):
         if text := pretty_text(val.to_bytes(size, "big"), short=True):
             return text
         val = "0x" + format(val, f"0{2 * size}x") if val else "0"
@@ -2038,7 +2047,7 @@ TEXT_CHARS = set(map(chr, range(0x20, 0x7F))) | {"\n", "\r", "\t"}
 def data_bytes(exp):
     """The bytes of exp as an element of a data, if they're known."""
     if m := match(exp, ("bytes", ":int:size", ":int:val")):
-        if 0 <= m.val < 2 ** (8 * m.size):
+        if fits_bytes(m.val, m.size):
             return m.val.to_bytes(m.size, "big")
     elif type(exp) == int and 0 <= exp < 2**256:
         return exp.to_bytes(32, "big")
