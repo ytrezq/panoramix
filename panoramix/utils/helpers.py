@@ -657,6 +657,9 @@ def replace(in_exp, what, by_what):
 
     if type(in_exp) == list:
         res = list(res)
+    elif res != in_exp:
+        # (what's bytes in it as wide as it was, as with replace_f)
+        res = keep_widths(in_exp, res)
 
     return res
 
