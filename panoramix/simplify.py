@@ -849,8 +849,11 @@ def simplify_exp(exp):
     ) and m.shl == minus_op(m.off):
         if (
             divisible_bytes(m.size)
-            and mem_le_op(to_bytes(m.size)[0], m.mem_size)
             and divisible_bytes(m.off)
+            # (the bytes masked are in the range: of mem[p len 1], bits
+            # 248 to 256 aren't)
+            and mem_le_op(add_op(to_bytes(m.size)[0], to_bytes(m.off)[0]), m.mem_size)
+            is True
         ):
             return (
                 "mem",
