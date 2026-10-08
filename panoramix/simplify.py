@@ -2338,6 +2338,11 @@ def replace_mem(trace, mem_idx, mem_val):
             res.append(line)
             memloc = simplify_exp(line[1])
             # (None: it may overlap)
+            if range_overlaps(memloc, mem_idx) is not False and affects(line, mem_val):
+                # what the value was read from changes too: the rest of it,
+                # not overwritten, isn't what it was read as any more
+                res.extend(copy(trace[idx + 1 :]))
+                return res
             if range_overlaps(memloc, mem_idx) is not False:
                 split = splits_mem(mem_idx, memloc, mem_val)
                 res2 = trace[idx + 1 :]
