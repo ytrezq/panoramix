@@ -68,11 +68,16 @@ def is_dynamic(kind, components=None):
     return False
 
 
+# more words than any calldata holds (gas pays for them)
+MAX_HEAD_WORDS = 2**16
+
+
 def head_words(kind, name, components=None):
     """
     [(type, name)] of the words a param takes in the head of the calldata:
     all the elements of a static tuple or array, the offset to anything
-    dynamic.
+    dynamic. (A static array of more words than calldata can hold - the
+    database has bytes32[1263941234127518272] - as one.)
     """
     if is_dynamic(kind, components):
         return [(kind, name)]
@@ -80,11 +85,12 @@ def head_words(kind, name, components=None):
     if kind.endswith("]"):
         base = kind[: kind.rindex("[")]
         count = int(kind[kind.rindex("[") + 1 : -1])
-        return [
-            word
-            for idx in range(count)
-            for word in head_words(base, f"{name}[{idx}]", components)
-        ]
+        res = []
+        for idx in range(min(count, MAX_HEAD_WORDS + 1)):
+            res += head_words(base, f"{name}[{idx}]", components)
+            if len(res) > MAX_HEAD_WORDS:
+                return [(kind, name)]
+        return res
 
     if kind == "tuple":
         res = []
