@@ -1582,6 +1582,13 @@ class VM(EasyCopy):
             if self.just_fdests and (test := selector_test(if_condition)):
                 fx_hash, taken = test
                 if taken:
+                    if (
+                        type(target) == int
+                        and self.lines.get(target, (None, None))[1] != "jumpdest"
+                    ):
+                        # where a jump can't go: the function is that invalid
+                        # jump, as it is from where no instruction is
+                        target = -1
                     n_true.trace = [("funccall", fx_hash, target, tuple_stack)]
                 else:
                     n_false.trace = [("funccall", fx_hash, n_false.start, tuple_stack)]

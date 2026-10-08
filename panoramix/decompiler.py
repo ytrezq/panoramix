@@ -159,7 +159,7 @@ def _decompile_with_loader(loader, only_func_name=None) -> Decompilation:
         logger.debug("stack %s", stack)
 
         try:
-            if target > 1 and loader.lines[target][1] == "jumpdest":
+            if loader.lines.get(target, (None, None))[1] == "jumpdest" and target > 1:
                 target += 1
 
             @timeout_decorator.timeout(
