@@ -504,8 +504,6 @@ def pretty_line(r, add_color=True):
         # which is the signature of the event (unless it's anonymous) - the
         # topics are the indexed ones
         data_params = pretty_memory(params, add_color=False)
-        if type(data_params) == str:  # "empty()"
-            data_params = ()
         topic_params = tuple(
             prettify(t, add_color=False, parentheses=False) for t in topics[1:]
         )
@@ -599,7 +597,6 @@ def pretty_line(r, add_color=True):
             addr = hex(addr)
         addr = prettify(addr, add_color=add_color)
         gas = prettify(gas, parentheses=False, add_color=add_color)
-        fparams = pretty_memory(fparams, add_color=add_color)
 
         if name is not None:
             yield f"{COLOR_WARNING}codecall{ENDC} {addr}.{name} with:"
@@ -614,7 +611,7 @@ def pretty_line(r, add_color=True):
 
         yield f"     gas {gas}"
 
-        if fparams is not None:
+        if fparams := pretty_memory(fparams, add_color=add_color):
             yield "    args {}".format(", ".join(fparams))
 
     elif m := match(r, ("delegatecall", ":gas", ":addr", ":fname", ":fparams")):
@@ -626,7 +623,6 @@ def pretty_line(r, add_color=True):
             addr = hex(addr)
         addr = prettify(addr, add_color=add_color)
         gas = prettify(gas, parentheses=False, add_color=add_color)
-        fparams = pretty_memory(fparams, add_color=add_color)
 
         if name is not None:
             yield f"{COLOR_WARNING}delegate{ENDC} {addr}.{name} with:"
@@ -637,7 +633,7 @@ def pretty_line(r, add_color=True):
 
         yield f"     gas {gas}"
 
-        if fparams is not None:
+        if fparams := pretty_memory(fparams, add_color=add_color):
             yield "    args {}".format(", ".join(fparams))
 
     elif opcode(r) == "selfdestruct":
@@ -690,8 +686,7 @@ def pretty_line(r, add_color=True):
 
         yield f"     gas {gas}"
 
-        if fparams is not None:
-            fparams = pretty_memory(fparams, add_color=add_color)
+        if fparams := pretty_memory(fparams, add_color=add_color):
             yield "    args {}".format(", ".join(fparams))
 
     elif m := match(r, ("staticcall", ":gas", ":addr", ":wei", ":fname", ":fparams")):
@@ -713,8 +708,7 @@ def pretty_line(r, add_color=True):
 
         yield f"        gas {gas}"
 
-        if fparams is not None:
-            fparams = pretty_memory(fparams, add_color=add_color)
+        if fparams := pretty_memory(fparams, add_color=add_color):
             yield "       args {}".format(", ".join(fparams))
 
     elif m := match(r, ("label", ":name", ":setvars")):
@@ -826,7 +820,10 @@ def pretty_line(r, add_color=True):
         res_mem = pretty_memory(param, add_color=True, abi_text=True)
         ret_val = ", ".join(res_mem)
 
-        if m := match(r, ("revert", ("data", ("bytes", 4, PANIC), ":int:panic_code"))):
+        if not res_mem:
+            # no data (see OUTPUT.md)
+            yield "stop" if op == "return" else "revert"
+        elif m := match(r, ("revert", ("data", ("bytes", 4, PANIC), ":int:panic_code"))):
             explanation = (
                 (f" {COLOR_GRAY}# " + PANIC_CODES[m.panic_code] + ENDC)
                 if m.panic_code in PANIC_CODES
@@ -2096,7 +2093,7 @@ def pretty_memory(exp, add_color=False, abi_text=False):
         return tuple()
 
     if exp == "mem":
-        return prettify(exp, add_color=add_color)
+        return (prettify(exp, add_color=add_color),)
 
     if opcode(exp) != "data":
         res = prettify(exp, add_color=add_color, parentheses=False)
@@ -2107,8 +2104,7 @@ def pretty_memory(exp, add_color=False, abi_text=False):
     exp = exp[1:]
 
     if len(exp) == 0:
-        return "empty()"
-    assert len(exp) > 0, exp
+        return ()
 
     res = []
 
