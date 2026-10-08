@@ -199,6 +199,9 @@ def stack_inputs(line):
     return (0 if op in NO_RESULT_OPS else 1) - diff
 
 
+# the most bytes of memory known_zeroes reads
+MAX_ZEROES_SIZE = 2**16
+
 # A codecopy of more bytes than that is left as code.data: the number would be
 # unreadable anyway, and one of more than 4300 digits (1786 bytes) can't even be
 # turned into a string since python 3.11, which aborts the whole function.
@@ -488,8 +491,12 @@ def read_memory(known, addr):
 
 
 def known_zeroes(known, start, size):
-    """True if the memory start..start + size is known to be zeroes."""
-    if type(start) is not int or type(size) is not int or size <= 0:
+    """
+    True if the memory start..start + size is known to be zeroes. Not for
+    more than MAX_ZEROES_SIZE bytes: it's read a word at a time, which for
+    a call's output of 2**255 bytes, say, wouldn't end.
+    """
+    if type(start) is not int or type(size) is not int or not 0 < size <= MAX_ZEROES_SIZE:
         return False
     return all(read_memory(known, start + off) == 0 for off in range(0, size, 32))
 
