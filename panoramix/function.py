@@ -439,6 +439,10 @@ class Function(EasyCopy):
                     kind = "array"
                 elif size == 1:
                     kind = "bool"
+                elif type(size) is int and 0 < size < 256 and size % 8 == 0:
+                    # (of a whole number of bytes, its type: uint24, not the
+                    # uint32 that's the next one mask_to_type knows)
+                    kind = mask_to_type(size) or f"uint{size}"
                 else:
                     kind = mask_to_type(size, force=True)
 
