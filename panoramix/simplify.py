@@ -804,8 +804,16 @@ def simplify_exp(exp):
         exp = mask_op(simplify_exp(m.expr), m.size, shift, shr=shift)
 
     if (
-        m := match(exp, ("mask_shl", Any, Any, ":shl", ("storage", ":size", Any, Any)))
-    ) and safe_le_op(m.size, minus_op(m.shl)):
+        (
+            m := match(
+                exp, ("mask_shl", Any, Any, ":shl", ("storage", ":size", ":off", Any))
+            )
+        )
+        and not (type(m.off) is int and m.off < 0)
+        and safe_le_op(m.size, minus_op(m.shl))
+    ):
+        # all the bits of a field (at 0: not one moved left, see
+        # algebra.apply_mask_to_storage) moved down past 0
         return 0
 
     if m := match(exp, ("or", ":sth", 0)):
