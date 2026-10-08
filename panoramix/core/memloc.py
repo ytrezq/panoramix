@@ -1276,7 +1276,9 @@ def fill_mem(exp, split, split_val):
     m_right = add_op(m_left, m_len)
     s_right = add_op(s_left, s_len)
 
-    if range_contains(split, memloc) is True:
+    if safe_ge_zero(m_len) is not False and range_contains(split, memloc) is True:
+        # (a read of a negative length, its end before its start, isn't in
+        # anything)
         inside = slice_exp(
             split_val,
             sub_op(m_left, s_left),
