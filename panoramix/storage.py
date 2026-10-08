@@ -277,6 +277,9 @@ def packed(e, off, width):
     The index of the element of `width` bits at slot + e, bits off, of an
     array packed `256 / width` in a slot - or None if it isn't one.
     """
+    if type(width) != int or not 0 < width <= 256:
+        # (an access of a size computed at runtime, say)
+        return None
     per = 256 // width
     lp, lw = log2(per), log2(width)
     if lp is None or lw is None or per < 2:
