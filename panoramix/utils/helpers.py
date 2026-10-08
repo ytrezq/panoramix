@@ -505,10 +505,11 @@ def to_exp2(num):  # checks if num is a power of 2, and if so, returns to which 
 
 
 def padded_hex(given_int, given_len):
-    if given_int >= 0:
-        hex_result = hex(given_int)[2:]  # remove '0x' from beginning of str
-    else:
-        hex_result = hex(given_int)[3:]  # remove '0x' from beginning of str
+    if given_int < 0:
+        # a word written as the negative number it is (see simplify_exp):
+        # the digits of the word - its given_len lowest ones
+        given_int %= 16**given_len
+    hex_result = hex(given_int)[2:]  # remove '0x' from beginning of str
 
     num_hex_chars = len(hex_result)
     extra_zeros = "0" * (given_len - num_hex_chars)  # may not get used..

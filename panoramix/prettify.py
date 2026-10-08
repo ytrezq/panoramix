@@ -1907,6 +1907,7 @@ def event_abi(topic):
     """The abi of the event whose signature is topic, if it's known."""
     if type(topic) != int:
         return None
+    topic %= 2**256  # (-1 is the word 2**256 - 1, see simplify_exp)
 
     abi = fetch_sig(padded_hex(topic, 64)[:10])
     if abi is None or abi.get("type") != "event":
