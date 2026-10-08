@@ -1833,7 +1833,9 @@ def cleanup_conds(trace):
             if ev is True:
                 res.append(("while", ("bool", 1), path, jds, setvars))
             elif ev is False:
-                pass  # removing loop altogether
+                # removing loop altogether - but not what it sets its
+                # variables to before it, which what follows may read
+                res.extend(setvars)
             else:
                 res.append(("while", cond, path, jds, setvars))
 
