@@ -1923,6 +1923,11 @@ class VM(EasyCopy):
                 # shifted in
                 stack.append(("sar", off, exp))
 
+        elif op == "iszero" and type(stack.peek()) == int:
+            # (a number: Stack.cleanup would make it a ("bool", n), which the
+            # algebra doesn't compute with - a jump to iszero(0) * 12 + 13)
+            stack.append(int(stack.pop() == 0))
+
         elif op in ["not", "iszero"]:
             stack.append((op, stack.pop()))
 
