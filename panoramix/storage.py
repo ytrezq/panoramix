@@ -1481,7 +1481,10 @@ class Storage:
                 continue
             n, sts = st
             if n in self.fields and not sts:
-                getters.setdefault(("field", n, off, off + size), name)
+                # (a field is bits known: not the bits of an access at a
+                # place computed at runtime, a byte of the slot by an index)
+                if type(off) is int and type(size) is int:
+                    getters.setdefault(("field", n, off, off + size), name)
             elif getter_path(self.types.get(n), sts, size, off):
                 getters.setdefault(("root", n), name)
 
