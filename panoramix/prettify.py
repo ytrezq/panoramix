@@ -1541,10 +1541,12 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
             and exp[1] + exp[2] == 256
             and exp[2] == -exp[3]
             and exp[2] < 8
+            and not may_be_wide(val)
         ):
             # e.g. (Mask(255, 1, eth.balance(this.address)) >> 1
             #           --> eth.balance(this.address) / 2
-            # for offsets smaller than 8
+            # for offsets smaller than 8 (of a word: the top of the mask is
+            # its top)
 
             if exp[3] <= 8:
                 return pret(("div", exp[4], 2 ** -exp[3]), parentheses=ctx)
@@ -1561,9 +1563,13 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
             # for offsets smaller than 8
 
             if (
-                size + offset != 256 and opcode(val) != "store"
+                (size + offset != 256 or offset != 0 or may_be_wide(val))
+                and opcode(val) != "store"
             ):  # opcode=store - hotfix for 0x000000000045Ef846Ac1cB7fa62cA926D5701512
-                val = ("mask", size + offset, 0, val)  # 0 because exp2 == exp3
+                # the bits [offset, offset + size) in place: not the ones below
+                # offset, which the mask clears (nor, of a value of more than
+                # a word, the ones past 256)
+                val = ("mask", size, offset, val)
 
             if exp[3] == 0:
                 return pret(val, parentheses=ctx)
