@@ -632,6 +632,12 @@ def merge_ifs(path):
                 merge_ifs(line[2]),
                 merge_ifs(path[idx + 1 :]),
             )
+            if not if_true or opcode(if_true[-1]) not in TERMINATING:
+                # what follows the if runs after its body too: it's not an
+                # else, nothing of the two is the same code
+                ret.append(("if", cond, if_true))
+                ret.extend(if_false)
+                break
             lines, merged = try_merge_ifs(cond, if_true, if_false)
             ret.extend(lines)
             ret.append(merged[:3])
