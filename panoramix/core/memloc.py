@@ -127,6 +127,11 @@ def value_bits(exp):
     if (m := match(exp, ("storage", ":int:size", ":int:off", Any))) and m.off >= 0:
         return m.size
 
+    if algebra.may_be_wide(exp):
+        # more than a word (a long range of memory, a data): as many bits
+        w = width_of(exp)
+        return w if type(w) is int and w > 256 else 2**64
+
     return 256
 
 
@@ -210,8 +215,11 @@ def max_value(exp):
         if m.off < 0:
             return top
         # x & mask is at most x, and at most the mask (not x's bound & mask:
-        # x <= 4 has x & 3 up to 3, 4 & 3 is 0)
-        bits = min(max_value(m.x), ((1 << m.size) - 1) << m.off)
+        # x <= 4 has x & 3 up to 3, 4 & 3 is 0) - of an x of more than a
+        # word, the mask
+        bits = ((1 << m.size) - 1) << m.off
+        if not algebra.may_be_wide(m.x):
+            bits = min(max_value(m.x), bits)
         bits = bits << m.shl if m.shl >= 0 else bits >> -m.shl
         return min(bits, top)
 
