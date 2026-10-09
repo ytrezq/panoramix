@@ -39,6 +39,7 @@ opcode_dict = {
     0x1B: "shl",
     0x1C: "shr",
     0x1D: "sar",
+    0x1E: "clz",
     #
     # Sha3
     #
@@ -212,6 +213,7 @@ stack_diffs = {
     "shl": -1,
     "shr": -1,
     "sar": -1,
+    "clz": 0,
     "blockhash": 0,
     "coinbase": 1,
     "selfdestruct": -1,

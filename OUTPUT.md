@@ -20,7 +20,8 @@ something for sure, it says less (a raw `stor[...]`, `mem[...]`, a
   place (the others 0). `ceil32(x)` / `floor32(x)` round to a multiple of 32,
   `min(x, y)` / `max(x, y)` are the smaller and the larger.
 - `byte(i, x)` is the byte `i` of `x`, the most significant one first (0 for
-  an `i` of 32 or more); `signextend(b, x)` the lowest `b + 1` bytes of `x`
+  an `i` of 32 or more); `clz(x)` the number of leading zero bits of `x`
+  (256 for 0: Osaka's CLZ); `signextend(b, x)` the lowest `b + 1` bytes of `x`
   sign-extended (`x` for a `b` of 31 or more); `shift(x, n)` is `x << n` when
   `n` is positive as a signed number (`n >=′ 0`), `x >> -n` when it isn't
   (Vyper's `shift`).

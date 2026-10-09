@@ -308,7 +308,7 @@ def _of_unchecked(t):
 COMPUTED = (
     ("add", "mul", "div", "sdiv", "mod", "smod", "exp", "addmod", "mulmod")
     + ("signextend", "and", "or", "xor", "not", "mask_shl", "shl", "shr", "sar")
-    + ("byte", "min", "max", "bytes", "data")
+    + ("byte", "clz", "min", "max", "bytes", "data")
 )
 
 
@@ -413,6 +413,10 @@ def _whole_term_range(t, bounds, top=WORD_TOP):
             cands = (lo * f_lo, lo * f_hi, hi * f_lo, hi * f_hi)
             lo, hi = min(cands), max(cands)
         return lo, hi
+
+    if op == "clz":
+        # the leading zero bits of a word
+        return 0, 256
 
     # the rest are words
     if (m := match(t, ("mod", ":x", ":int:c"))) and 0 < m.c:

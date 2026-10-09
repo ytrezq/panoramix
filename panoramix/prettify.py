@@ -1311,7 +1311,7 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         # the bytes of the code of the account (see OUTPUT.md)
         return f"ext_code({pret(m.addr)}).data[{pret(m.start)} len {pret(m.size)}]"
 
-    if opcode(exp) in ("max", "min", "byte"):
+    if opcode(exp) in ("max", "min", "byte", "clz"):
         _, *terms = exp
         return "{}({})".format(opcode(exp), ", ".join([pret(e) for e in terms]))
 

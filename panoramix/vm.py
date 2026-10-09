@@ -1956,7 +1956,7 @@ class VM(EasyCopy):
             # algebra doesn't compute with - a jump to iszero(0) * 12 + 13)
             stack.append(int(stack.pop() == 0))
 
-        elif op in ["not", "iszero"]:
+        elif op in ["not", "iszero", "clz"]:
             stack.append((op, stack.pop()))
 
         elif op == "sha3":

@@ -606,6 +606,11 @@ def xor(*terms):
     return res
 
 
+def clz(value):
+    # the leading zero bits of the word (Osaka's CLZ): 256 for 0
+    return 256 - value.bit_length()
+
+
 def byte_op(position, value):
     if position >= 32:
         return 0
@@ -728,6 +733,7 @@ OPCODES = {
     "xor": xor,
     "not": not_op,
     "byte": byte_op,
+    "clz": clz,
     "eq": eq,
     "lt": lt,
     "le": le,
