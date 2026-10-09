@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import sys
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 
 import timeout_decorator
 
@@ -26,6 +26,45 @@ logger = logging.getLogger(__name__)
 _scale = float(os.environ.get("PANORAMIX_TIMEOUT", "1"))
 STEP_TIMEOUT = 60 * _scale
 FUNCTION_TIMEOUT = 60 * 3 * _scale
+
+# The ifs of a trace nest as deep as the jumps of the code take them, and
+# the walks of a trace (the simplifier's, the folder's, the printer's)
+# recurse into them: python's 1000 frames failed a function past some 300
+# levels (a RecursionError, the function lost).
+RECURSION_LIMIT = 100_000
+FRAME_SIZE = 2048  # bytes of the stack a frame takes, at most (pypy's: ~750)
+
+
+@contextmanager
+def deep_recursion():
+    """
+    Python's recursion as deep as RECURSION_LIMIT frames, the main thread's
+    stack let grow for them - or as deep as the stack holds, where the
+    system doesn't let it grow.
+    """
+    limit = sys.getrecursionlimit()
+    stack = None
+    try:
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
+        size = RECURSION_LIMIT * FRAME_SIZE
+        if soft != resource.RLIM_INFINITY and soft < size:
+            if hard != resource.RLIM_INFINITY:
+                size = min(size, hard)
+            if size > soft:
+                resource.setrlimit(resource.RLIMIT_STACK, (size, hard))
+                stack = (soft, hard)
+        sys.setrecursionlimit(max(limit, size // FRAME_SIZE))
+    except (ImportError, ValueError, OSError):
+        pass
+
+    try:
+        yield
+    finally:
+        sys.setrecursionlimit(limit)
+        if stack is not None:
+            resource.setrlimit(resource.RLIMIT_STACK, stack)
 
 
 @dataclasses.dataclass
@@ -50,13 +89,15 @@ class TimeoutInterrupt(BaseException):
 def decompile_bytecode(code: str, only_func_name=None) -> Decompilation:
     loader = Loader()
     loader.load_binary(code)  # Code is actually hex.
-    return _decompile_with_loader(loader, only_func_name)
+    with deep_recursion():
+        return _decompile_with_loader(loader, only_func_name)
 
 
 def decompile_address(address: str, only_func_name=None) -> Decompilation:
     loader = Loader()
     loader.load_addr(address)
-    return _decompile_with_loader(loader, only_func_name)
+    with deep_recursion():
+        return _decompile_with_loader(loader, only_func_name)
 
 
 def _decompile_with_loader(loader, only_func_name=None) -> Decompilation:
