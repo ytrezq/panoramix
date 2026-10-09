@@ -1315,6 +1315,18 @@ def prettify(exp, rem_bool=False, parentheses=True, top_level=False, add_color=F
         _, *terms = exp
         return "{}({})".format(opcode(exp), ", ".join([pret(e) for e in terms]))
 
+    if opcode(exp) == "safemath":
+        # a function of the contract's def SafeMath (see safemath.py): its
+        # operands (one for inc and dec), then the messages it fails with,
+        # string literals
+        _, name, *args = exp
+        n = 1 if name.rstrip("0123456789") in ("inc", "dec") else 2
+        return (
+            f"SafeMath.{name}("
+            + ", ".join([pret(e) for e in args[:n]] + list(args[n:]))
+            + ")"
+        )
+
     if exp == "number":
         return "block.number"
 

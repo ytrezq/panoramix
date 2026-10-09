@@ -192,3 +192,22 @@ storage (vyper):` for Vyper, whose mappings hash the slot, then the key:
 
 A name of the header is the one of the getter that returns it when there is
 one, else `storN` (`storN_O` for the bits from `O` on of the slot `N`).
+
+## SafeMath
+
+The `def SafeMath:` header has the functions of checked arithmetic the
+contract runs, as their code is: the checks that fail before the result is
+used - those of OpenZeppelin's SafeMath, of ds-math (a library's internal
+functions, solidity < 0.8), of the compiler (solidity's since 0.8, `#
+solidity >= 0.8`: an overflow is `Panic(17)`, a division by zero
+`Panic(18)`, `inc` and `dec` its `x + 1` and `x - 1`; the check of a
+division of solidity < 0.8, `assert b`; Vyper's), a buggy check as it is.
+There is a function for each other check, numbered (`add2`), and its
+message is a parameter, `errorMessage`, where it fails with different ones.
+
+`SafeMath.add(a, b)` is `a + b`, its checks passed - where the code has
+them, and the result after them (in the condition of the next check, or
+the next line that may fail): `SafeMath.sub(x, y, 'text')` reverts with
+`'text'` where `y > x`. Checks whose result is used only later - after
+another check, a call, in a branch - are left as they are: the call there
+would fail after them.

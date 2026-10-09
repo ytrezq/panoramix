@@ -1,6 +1,7 @@
 import logging
 
 import panoramix.folder as folder
+import panoramix.safemath as safemath
 import panoramix.storage as storage
 from panoramix.postprocess import short_circuits
 from panoramix.matcher import match
@@ -63,13 +64,18 @@ class Contract:
         self.code = code
         self.lang = "solidity"
         self.stor_defs = {}
+        # the functions of the contract's SafeMath (see safemath.py)
+        self.safemath = []
 
     def json(self) -> dict:
-        return {
+        res = {
             "problems": self.problems,
             "stor_defs": self.stor_defs,
             "functions": [f.serialize() for f in self.functions],
         }
+        if self.safemath:
+            res["safemath"] = "\n".join(safemath.pretty_defs(self.safemath))
+        return res
 
     def load(self, data):
         self.problems = data["problems"]
@@ -118,6 +124,12 @@ class Contract:
         ] + [f for f in self.functions if f.const and f.name.upper() == f.name]
 
         self.make_asts()
+
+        try:
+            self.safemath = safemath.rewrite(self.functions)
+        except Exception:
+            logger.exception("SafeMath failed: the arithmetic stays as it is.")
+            self.safemath = []
 
     def make_asts(self):
 

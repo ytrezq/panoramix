@@ -13,6 +13,7 @@ from panoramix.contract import Contract
 from panoramix.function import Function
 from panoramix.loader import Loader
 from panoramix.prettify import explain, pprint_repr, pprint_trace
+from panoramix.safemath import pretty_defs
 from panoramix.storage import pretty_def
 from panoramix.vm import VM, entry_memory
 from panoramix.whiles import make_whiles
@@ -314,6 +315,12 @@ def _decompile_with_loader(loader, only_func_name=None) -> Decompilation:
             for s in contract.stor_defs:
                 print(pretty_def(s))
 
+            print()
+
+        if contract.safemath:
+            print(f"{C.green}def {C.end}SafeMath:")
+            for line in pretty_defs(contract.safemath):
+                print(line)
             print()
 
         """
