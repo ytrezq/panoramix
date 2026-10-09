@@ -50,6 +50,13 @@ def set_func(hash):
     _func = _abi[hash]
 
 
+def clear_func():
+    """No function of the abi printed: the calldata as it is (see
+    get_param_name) - the text of a recursive internal function."""
+    global _func
+    _func = None
+
+
 def is_dynamic(kind, components=None):
     """If a param of the type is dynamic: in the head, only its offset."""
     if kind in ("bytes", "string") or kind.endswith("[]"):

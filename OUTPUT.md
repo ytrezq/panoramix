@@ -211,3 +211,18 @@ the next line that may fail): `SafeMath.sub(x, y, 'text')` reverts with
 `'text'` where `y > x`. Checks whose result is used only later - after
 another check, a call, in a branch - are left as they are: the call there
 would fail after them.
+
+## Recursive internal functions
+
+An internal function that calls itself, or calls what calls it, isn't
+inlined in its callers as the others are (its calls would unroll until the
+decompiler stops): `_1, _2 = internal_0x1a2(a, b)` is a call of the code at
+`0x1a2` with those words, `_1, _2` the words it returns (no `=`: none), the
+storage and the memory as it may leave them. It's decompiled apart, after
+the regular functions: `def internal_0x1a2(_param1, _param2):`, its params
+the words it's called with, `return x, y` what it returns, `# recursive, a
+call takes K of the 1024 words of the stack` what bounds the recursion -
+the EVM's stack has 1024 words, a call past them fails. `cd[a]` in it is
+the word of calldata at `a`: the params of the functions that call it
+aren't its own. A recursion that never returns but by reverting is
+unrolled as before.

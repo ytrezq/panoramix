@@ -128,6 +128,11 @@ precompiled_var_names = {
 }
 
 
+def internal_name(entry):
+    """The name of the recursive internal function at entry (see vm.VM.internal)."""
+    return f"internal_{hex(entry)}"
+
+
 def opcode(exp):
     if type(exp) != tuple or len(exp) == 0:
         return None

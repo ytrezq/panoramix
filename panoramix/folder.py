@@ -227,6 +227,7 @@ TERMINATING = (
     "revert",
     "continue",
     "undefined",
+    "leave",
 )
 
 
@@ -481,6 +482,7 @@ def flatten(path):
             "revert",
             "continue",
             "undefined",
+            "leave",
         ):
             return True
         elif opcode(line) == "or":

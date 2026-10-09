@@ -231,6 +231,10 @@ MEMORY_FACTS = ("memory", "memory_fresh")
 # mentions returndatasize, at a call and at the head of a loop)
 RETURNDATASIZE_ZERO = ("returndatasize_zero",)
 
+# Where a recursive internal function decompiled apart returns (see
+# VM.internal): the address below its arguments, as its caller pushed it.
+RETURN_ADDRESS = ("return_address",)
+
 
 def mask_value(value, size, offset=0, shl=0):
     """mask_op, that also computes a number, and leaves a word as it is."""
@@ -766,8 +770,20 @@ def link_if(node, line):
 
 
 class VM(EasyCopy):
-    def __init__(self, loader, just_fdests=False):
+    def __init__(self, loader, just_fdests=False, internal=None):
         self.loader = loader
+
+        # The recursive internal functions: their entry -> (how many words
+        # their arguments take, their results, the stack a call of
+        # themselves takes). A call of one isn't unrolled (it would be until
+        # the VM stops, the EVM's stack of 1024 words being what bounds the
+        # recursion), it's a line - its arguments, variables for its results
+        # - and the function is decompiled apart (see the decompiler). Those
+        # it's given (the function decompiled apart), and those it finds:
+        # where a function is called again in its own call (see
+        # recursion_of).
+        self.internal = dict(internal or {})
+        self.found = {}
 
         # (line_no, op, param)
         self.lines = loader.lines  # a shortcut
@@ -841,6 +857,7 @@ class VM(EasyCopy):
         known=(),
         entry=None,
         memory=(),
+        inside=False,
     ):
         """
         `known` is a tuple of conditions known to hold when `start` is reached,
@@ -850,6 +867,9 @@ class VM(EasyCopy):
         goes at the beginning of the trace. If it isn't known, the free memory
         pointer is assumed to be 0x60, as the old compilers set it. `memory`
         is what's known of the memory then (see entry_memory).
+
+        `inside`: start is an internal function's, decompiled apart (see
+        internal) - nothing is known of the memory nor of what ran before.
         """
         self.name_past((stack, known, entry, memory))
 
@@ -868,7 +888,9 @@ class VM(EasyCopy):
 
         self.should_quit = should_quit
 
-        if entry is None:
+        if inside:
+            before = []
+        elif entry is None:
             before = (
                 [("setmem", ("range", 0x40, 32), 0x60)]
                 if variants.FREE_MEMORY_POINTER
@@ -932,6 +954,12 @@ class VM(EasyCopy):
                 """
 
                 self.replace_loops(root)
+
+                """
+                    the calls of a function in its own call: not unrolled
+                """
+
+                self.replace_recursions(root)
 
                 """
                     turn them into loops right away: the later this is
@@ -1025,6 +1053,185 @@ class VM(EasyCopy):
                     tuple(vars),
                 )
                 node.trace = [loop_line]
+
+    def replace_recursions(self, root):
+        """
+        Where a node starts the call of an internal function in its own call
+        (see recursion_of), the function is a recursive one: every call of it
+        is a line (see internal_call) - those of the path explored, the first
+        one included, explored again as such.
+        """
+        if self.just_fdests:
+            return
+
+        for node in find_nodes(root, lambda n: n.trace is None):
+            if self.internal_call_at(node.start, node.stack):
+                # (a call already, once it runs)
+                continue
+            rec = self.recursion_of(node)
+            if rec is None or rec[0] in self.internal:
+                continue
+
+            entry, n, m, frame = rec
+            self.internal[entry] = (n, m, frame)
+            self.found[entry] = (n, m, frame)
+
+            for x in find_nodes(
+                root,
+                lambda x: x.start == entry
+                and x.trace is not None
+                and self.internal_call_at(x.start, x.stack),
+            ):
+                x.trace = None
+                x.next = []
+            return
+
+    def recursion_of(self, node):
+        """
+        (entry, n, m, frame) if node starts the call of an internal function
+        in its own call - recursion: an ancestor starts there too, with the
+        address its call returns to (the topmost on its stack) on node's
+        stack, all below it the same, and above it as many words as node has
+        above its own, the n arguments; m the words of its results, as one
+        of the calls of it returned them (None while none is known: the
+        recursion is unrolled another level, until one is); frame the words
+        of the stack a call of itself takes. None if node isn't one.
+        """
+        start = node.start
+        if type(start) is not int or start not in self.loader.jump_dests:
+            return None
+
+        def top_dest(stack):
+            for i in range(len(stack) - 1, -1, -1):
+                if type(stack[i]) is int and stack[i] in self.loader.jump_dests:
+                    return i
+            return None
+
+        q = top_dest(node.stack)
+        if q is None:
+            return None
+
+        n = frame = None
+        m = None
+        # the ancestors, the nearest first
+        prev = node.prev
+        while isinstance(prev, Node):
+            if prev.start != start or len(prev.stack) >= len(node.stack):
+                prev = prev.prev
+                continue
+            p = top_dest(prev.stack)
+            if (
+                p is None
+                or p >= q
+                or len(prev.stack) - p != len(node.stack) - q
+                or tuple(prev.stack[: p + 1]) != tuple(node.stack[: p + 1])
+            ):
+                prev = prev.prev
+                continue
+            if n is None:
+                entry, n, frame = self.call_entry(prev, p, node, q)
+            # its results: where its call returns, the stack below the
+            # address the same, and the address gone - not the code there
+            # while the call runs (solc's optimizer makes the end of a
+            # function, which returns to the address the stack has, the
+            # end of others too: it's where they return)
+            ret, below = prev.stack[p], tuple(prev.stack[:p])
+            for r in find_nodes(
+                prev,
+                lambda x: x.start == ret
+                and len(x.stack) >= p
+                and tuple(x.stack[:p]) == below
+                and not (len(x.stack) > p and x.stack[p] == ret),
+            ):
+                m = len(r.stack) - p
+                break
+            if m is not None:
+                return entry, n, m, frame
+            prev = prev.prev
+
+        return None
+
+    def call_entry(self, prev, p, node, q):
+        """
+        (entry, n, frame) of the call of the function prev and node are the
+        calls of (the address it returns to at p on prev's stack, at q on
+        node's): where it starts, the outermost node of the call of prev
+        that the call of node has too (one where as many words are above
+        the address) - not a block the first ones go to, which would make
+        what they push before arguments of it.
+        """
+
+        def within(x, k, stack):
+            return len(x.stack) > k and tuple(x.stack[: k + 1]) == tuple(stack[: k + 1])
+
+        outer = []
+        x = prev
+        while isinstance(x, Node) and within(x, p, prev.stack):
+            outer.append(x)
+            x = x.prev
+        inner = []
+        y = node
+        while isinstance(y, Node) and within(y, q, node.stack):
+            inner.append(y)
+            y = y.prev
+
+        for x in reversed(outer):
+            for y in inner:
+                if y.start == x.start and len(y.stack) - q == len(x.stack) - p:
+                    return x.start, len(x.stack) - p - 1, len(y.stack) - len(x.stack)
+
+        return prev.start, len(prev.stack) - p - 1, len(node.stack) - len(prev.stack)
+
+    def internal_call_at(self, start, stack):
+        """Whether start, with stack, is the call of a recursive internal function."""
+        if type(start) is not int or start not in self.internal:
+            return False
+        n = self.internal[start][0]
+        if len(stack) <= n:
+            return False
+        ret = stack[len(stack) - n - 1]
+        return type(ret) is int and ret in self.loader.jump_dests
+
+    def internal_call(self, start, condition):
+        """
+        The trace of the call of the recursive internal function at start (the
+        stack the VM's): ("internal", start, its arguments, the names of the
+        variables of its results), then where it returns, the address below
+        its arguments, with them on the stack - the state as a call may leave
+        it: the storage written, the memory too.
+        """
+        n, m, frame = self.internal[start]
+        trace = []
+
+        def add(line):
+            trace.append(line)
+
+        self.snapshot(add, "delegatecall")
+        stack = self.stack.stack
+        args = tuple(stack[len(stack) - n :])
+        ret = stack[len(stack) - n - 1]
+        results = []
+        for _ in range(m):
+            self.counter += 1
+            results.append(f"_{self.counter}")
+        trace.append(("internal", start, args, tuple(results)))
+
+        self.known = tuple(
+            fact
+            for fact in forget(self.known, VOLATILE)
+            if opcode(fact) not in MEMORY_FACTS
+        )
+        node = Node(
+            self,
+            start=ret,
+            safe=False,
+            stack=tuple(stack[: len(stack) - n - 1])
+            + tuple(("var", r) for r in results),
+            condition=condition,
+            known=self.known,
+        )
+        trace.append(("jump", node))
+        return trace
 
     def continue_loops(self, root):
         loop_list = find_nodes(
@@ -1299,6 +1506,7 @@ class VM(EasyCopy):
             "assert_fail",
             "selfdestruct",
             "undefined",
+            "leave",
         )
 
         if jd == p.jd or not (p.trace and opcode(p.trace[-1]) == "if"):
@@ -1471,6 +1679,9 @@ class VM(EasyCopy):
         self.halted = False
         trace = []
 
+        if self.internal and self.internal_call_at(start, stack):
+            return self.internal_call(start, condition)
+
         i = start
         lines = self.lines
 
@@ -1638,6 +1849,12 @@ class VM(EasyCopy):
 
         if op == "jump":
             target = stack.pop()
+
+            if target == RETURN_ADDRESS:
+                # the end of the internal function decompiled apart: what's
+                # on the stack, its results
+                trace.append(("leave", tuple(self.stack.stack)))
+                return trace
 
             n = Node(
                 self,

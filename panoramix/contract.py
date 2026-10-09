@@ -22,7 +22,7 @@ from panoramix.utils.helpers import (
     tuplify,
 )
 
-from panoramix.function import Function
+from panoramix.function import Function, InternalFunction
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +55,14 @@ def deserialize(trace):
 
 
 class Contract:
-    def __init__(self, functions, problems, code=None):
+    def __init__(self, functions, problems, code=None, internal=()):
         self.problems = problems
         self.functions = []
         for func in functions.values():
             self.functions.append(func)
+        # the recursive internal functions, decompiled apart (see
+        # vm.VM.internal), by their entry
+        self.internal = list(internal)
 
         self.code = code
         self.lang = "solidity"
@@ -75,6 +78,8 @@ class Contract:
         }
         if self.safemath:
             res["safemath"] = "\n".join(safemath.pretty_defs(self.safemath))
+        if self.internal:
+            res["internal"] = [f.serialize() for f in self.internal]
         return res
 
     def load(self, data):
@@ -92,7 +97,7 @@ class Contract:
     def postprocess(self):
         try:
             self.lang, self.stor_defs = storage.rewrite_functions(
-                self.functions, self.code
+                self.functions + self.internal, self.code
             )
         except Exception:
             # this is critical, because it causes full contract to display very
@@ -100,7 +105,7 @@ class Contract:
             logger.exception("Storage postprocessing failed. This is very bad!")
             self.stor_defs = []
             # the accesses as the slots they are
-            storage.rewrite_raw(self.functions)
+            storage.rewrite_raw(self.functions + self.internal)
 
         # (not the names of variables nor of params, see prettify.set_names)
         storage_names = [d[1] for d in self.stor_defs]
@@ -126,14 +131,14 @@ class Contract:
         self.make_asts()
 
         try:
-            self.safemath = safemath.rewrite(self.functions)
+            self.safemath = safemath.rewrite(self.functions + self.internal)
         except Exception:
             logger.exception("SafeMath failed: the arithmetic stays as it is.")
             self.safemath = []
 
     def make_asts(self):
 
-        for func in self.functions:
+        for func in self.functions + self.internal:
             func.ast = self.make_ast(func.trace)
 
     def make_ast(self, trace):

@@ -32,10 +32,12 @@ from panoramix.utils.helpers import (
     color,
     find_f,
     find_f_list,
+    internal_name,
     opcode,
 )
 from panoramix.utils.signatures import (
     calldata_params,
+    clear_func,
     get_abi_name,
     get_func_name,
     get_func_params,
@@ -623,7 +625,8 @@ class Function(EasyCopy):
         exp_text.append(("payable", self.payable))
 
         self.read_only = True
-        # (what changes the state, or does something that stays: a log)
+        # (what changes the state, or does something that stays: a log - or
+        # may: a recursive internal function, see vm.VM.internal)
         for op in [
             "store",
             "tstore",
@@ -634,6 +637,7 @@ class Function(EasyCopy):
             "create",
             "create2",
             "log",
+            "internal",
         ]:
             if f"'{op}'" in str(self.trace):
                 self.read_only = False
@@ -731,3 +735,59 @@ class Function(EasyCopy):
         explain_text("function traits", exp_text)
 
         return self
+
+
+class InternalFunction(EasyCopy):
+    """
+    A recursive internal function, decompiled apart (see vm.VM.internal):
+    its params the words its calls push above the address it returns to,
+    its results those it leaves there.
+    """
+
+    def __init__(self, entry, params, results, frame, trace):
+        self.entry = entry
+        self.hash = self.name = internal_name(entry)
+        self.params = params
+        self.results = results
+        # the words of the stack a call of itself takes: of the EVM's 1024,
+        # what bounds the recursion
+        self.frame = frame
+        self.trace = deepcopy(trace)
+        self.orig_trace = deepcopy(self.trace)
+        self.ast = None
+        # (not a getter nor a constant: see storage)
+        self.getter = None
+        self.const = None
+
+    def param_names(self):
+        return [f"_param{i + 1}" for i in range(self.params)]
+
+    def print(self):
+        # (not the params of the function of the abi printed before: its
+        # calldata as it is)
+        clear_func()
+        set_names(params=self.param_names())
+        header = (
+            color("def ", C.header)
+            + self.name
+            + "("
+            + ", ".join(self.param_names())
+            + "): "
+            + color(
+                f"# recursive, a call takes {self.frame} of the 1024 words of the stack",
+                C.gray,
+            )
+        )
+        res = list(pprint_logic(self.ast if self.ast is not None else self.trace))
+        return "\n".join([header] + res)
+
+    def serialize(self):
+        return {
+            "name": self.name,
+            "entry": self.entry,
+            "params": self.params,
+            "results": self.results,
+            "frame": self.frame,
+            "print": self.print(),
+            "trace": self.trace,
+        }

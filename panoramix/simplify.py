@@ -276,7 +276,7 @@ def immutable(exp, values, seen=()):
 
 # what a path that reverts ends with, and what else makes it go elsewhere
 REVERTS = ("revert", "invalid", "assert_fail")
-EXITS = ("return", "stop", "selfdestruct", "goto", "continue", "undefined")
+EXITS = ("return", "stop", "selfdestruct", "goto", "continue", "undefined", "leave")
 
 
 def reverts(trace):
@@ -1920,6 +1920,11 @@ def overwrites_mem(line, mem_idx, breaks=True):
         # matters for what comes after the if, when its branches merge again
         return any(overwrites_mem(l, mem_idx, breaks) for l in line[2] + line[3])
 
+    if opcode(line) == "internal":
+        # a recursive internal function (see vm.VM.internal) may write any
+        # memory
+        return True
+
     return False
 
 
@@ -2021,6 +2026,10 @@ def changes_reads(line, exp):
     if op == "precompiled":
         # a call too: what calls return is what it returns
         return bool(changed_reads(exp, "staticcall"))
+    if op == "internal":
+        # a recursive internal function (see vm.VM.internal): it may do
+        # anything a call does
+        return bool(changed_reads(exp, "delegatecall"))
     if op == "if":
         return any(changes_reads(l, exp) for l in line[2] + line[3])
     if op == "while":
@@ -2157,6 +2166,16 @@ def _mem_use(trace, mem_idx):
         elif opcode(line) == "continue":
             return USED
 
+        elif opcode(line) in ("internal", "leave"):
+            # a recursive internal function may read any memory (see
+            # vm.VM.internal), and its caller once it returns - but
+            # solidity's scratch space, which is read where it's written (a
+            # hash's words) - and what it's given, what it returns
+            if not in_scratch(mem_idx) or exp_uses_mem(line, mem_idx):
+                return USED
+            if opcode(line) == "leave":
+                return OVERWRITTEN
+
         else:
             if exp_uses_mem(line, mem_idx):
                 return USED
@@ -2168,6 +2187,12 @@ def _mem_use(trace, mem_idx):
 
 
 ENDS_EXECUTION = ("revert", "return", "stop", "invalid", "assert_fail", "selfdestruct")
+
+
+def in_scratch(mem_idx):
+    """Whether mem_idx is in solidity's scratch space, the first 64 bytes."""
+    m = match(mem_idx, ("range", ":int:begin", ":int:size"))
+    return bool(m) and m.begin >= 0 and m.size >= 0 and m.begin + m.size <= 64
 
 
 def trace_ends_execution(trace):
@@ -2422,7 +2447,13 @@ def replace_mem(trace, mem_idx, mem_val):
             defined.clear()
 
         elif affects(line, mem_val) or affects(line, mem_id):
-            if opcode(line) in ("call", "staticcall", "delegatecall", "callcode"):
+            if opcode(line) in (
+                "call",
+                "staticcall",
+                "delegatecall",
+                "callcode",
+                "internal",
+            ):
                 # what it's called with is read before it runs, and changes
                 # anything
                 res.append(replace_mem_exp(line, mem_idx, mem_val))
@@ -3219,4 +3250,9 @@ def leaves_loop(path):
     last = path[-1]
     if opcode(last) == "if":
         return len(last) < 4 or leaves_loop(last[2]) or leaves_loop(last[3])
-    return opcode(last) not in ENDS_EXECUTION + ("continue", "undefined", "goto")
+    return opcode(last) not in ENDS_EXECUTION + (
+        "continue",
+        "undefined",
+        "leave",
+        "goto",
+    )

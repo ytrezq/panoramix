@@ -57,6 +57,7 @@ from panoramix.utils.helpers import (
     colorize,
     contains,
     find_f_list,
+    internal_name,
     is_array,
     opcode,
     padded_hex,
@@ -275,6 +276,7 @@ ENDS_PATH = (
     "continue",
     "break",
     "undefined",
+    "leave",
 )
 
 
@@ -727,6 +729,19 @@ def pretty_line(r, add_color=True):
 
     elif opcode(r) == "setvar":
         yield prettify(r, add_color=add_color)
+
+    elif m := match(r, ("internal", ":entry", ":args", ":results")):
+        # the call of a recursive internal function (see vm.VM.internal),
+        # the variables of its results
+        call = internal_name(m.entry) + "(" + ", ".join(pret(a) for a in m.args) + ")"
+        if m.results:
+            yield ", ".join(pret(("var", v)) for v in m.results) + " = " + call
+        else:
+            yield call
+
+    elif m := match(r, ("leave", ":values")):
+        # the end of a recursive internal function: its results
+        yield "return " + ", ".join(pret(v) for v in m.values) if m.values else "return"
 
     elif opcode(r) == "setmem":
         yield prettify(r, add_color=add_color)

@@ -166,7 +166,7 @@ def falls_through(trace):
     last = trace[-1]
     if opcode(last) == "if":
         return falls_through(last[2]) or falls_through(last[3])
-    return opcode(last) not in ("goto", "undefined") + ENDS_EXECUTION
+    return opcode(last) not in ("goto", "undefined", "leave") + ENDS_EXECUTION
 
 
 # lines that change nothing an expression reads (but variables, see sets)
@@ -180,6 +180,7 @@ PURE_LINES = (
     "jump",
     "jumpdest",
     "undefined",
+    "leave",
     "log",
 ) + ENDS_EXECUTION
 
