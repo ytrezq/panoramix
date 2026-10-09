@@ -1,4 +1,3 @@
-import itertools
 import logging
 import time
 import sys
@@ -548,25 +547,6 @@ def decided(value, known):
     return value
 
 
-# the numbers of the loops found (see loop_key)
-loop_keys = itertools.count(1)
-
-
-def loop_key(head):
-    """
-    What the variables of the loop that starts at the node head are numbered
-    after (see stack.fold_stacks): a number of its own, the same when it's
-    found again. Not the depth of a node in the tree - a loop in another can
-    start as deep as it: `for i... for j... if (j == i)` was `if i == i` -
-    nor where it starts in the code: a function with a loop called twice,
-    `(inner(a), inner(b))`, has the result of the first loop kept while the
-    second runs.
-    """
-    if getattr(head, "loop_key", None) is None:
-        head.loop_key = next(loop_keys)
-    return head.loop_key
-
-
 class Node:
     def __str__(self):
         return f"Node({self.jd})"
@@ -799,10 +779,56 @@ class VM(EasyCopy):
         self.pending_merges = {}
         # how many results of each precompile were named
         self.precompile_results = {}
+        # the number of the next loop found (see loop_key)
+        self.next_loop_key = 1
         self.known = ()
         self.should_quit = lambda: False
         global node_count
         node_count = 0
+
+    def loop_key(self, head):
+        """
+        What the variables of the loop that starts at the node head are
+        numbered after (see stack.fold_stacks): a number of its own, the same
+        when it's found again. Not the depth of a node in the tree - a loop in
+        another can start as deep as it: `for i... for j... if (j == i)` was
+        `if i == i` - nor where it starts in the code: a function with a loop
+        called twice, `(inner(a), inner(b))`, has the result of the first loop
+        kept while the second runs. Nor what was found before, by the VMs of
+        the functions decompiled before it: its names would depend on them.
+        """
+        if getattr(head, "loop_key", None) is None:
+            head.loop_key = self.next_loop_key
+            self.next_loop_key += 1
+        return head.loop_key
+
+    def name_past(self, given):
+        """
+        Its own variables named past those in what it's given: a function's
+        stack, what's known there and what runs before it come from the
+        dispatcher (see Loader.run), whose variables another VM named - the
+        same name would be two variables.
+        """
+        bases = set(precompiled_var_names.values())
+        for var in find_op_list(given, "var"):
+            if len(var) != 2:
+                continue
+            name = var[1]
+            if type(name) == int:
+                # a loop's (see loop_key)
+                self.next_loop_key = max(self.next_loop_key, name // 1000 + 1)
+            elif type(name) != str:
+                continue
+            elif name[:1] == "_" and name[1:].isdigit():
+                self.counter = max(self.counter, int(name[1:]))
+            else:
+                # a precompile's result: signer, signer2...
+                for base in bases:
+                    count = name[len(base) :]
+                    if name.startswith(base) and (count == "" or count.isdigit()):
+                        self.precompile_results[base] = max(
+                            self.precompile_results.get(base, 0), int(count or 1)
+                        )
 
     def run(
         self,
@@ -825,6 +851,8 @@ class VM(EasyCopy):
         pointer is assumed to be 0x60, as the old compilers set it. `memory`
         is what's known of the memory then (see entry_memory).
         """
+        self.name_past((stack, known, entry, memory))
+
         time_start = time.monotonic()
 
         max_nodes = MAX_FDESTS_NODE_COUNT if self.just_fdests else MAX_NODE_COUNT
@@ -987,7 +1015,7 @@ class VM(EasyCopy):
                 folded, vars = fold_stacks(
                     node.history[node.jd].stack,
                     node.stack,
-                    loop_key(node.history[node.jd]),
+                    self.loop_key(node.history[node.jd]),
                 )
                 loop_line = (
                     "loop",
@@ -1044,7 +1072,7 @@ class VM(EasyCopy):
                 if not set_vars:
                     # (a loop of its own, from loop_dest: see set_label)
                     folded, var_list = fold_stacks(
-                        old_stack, stack, loop_key(loop_dest)
+                        old_stack, stack, self.loop_key(loop_dest)
                     )
                     if var_list:
                         node.trace = None
@@ -1072,7 +1100,7 @@ class VM(EasyCopy):
                     # The loop gets explored again, with a variable there too.
                     first = loop_dest.label
                     folded, var_list = stack_vars(
-                        first.stack, var_positions | changed, loop_key(first)
+                        first.stack, var_positions | changed, self.loop_key(first)
                     )
                     loop_dest.trace = None
                     loop_dest.next = []
